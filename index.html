@@ -19,9 +19,9 @@ canvas{position:absolute;inset:0;display:block;width:100%;height:100%;touch-acti
 .actions{display:flex;gap:7px;pointer-events:auto}
 .icon{border:1px solid #6b7f9b80;background:#15243be6;border-radius:12px;color:#eef5ff;font-size:17px;width:40px;height:39px;cursor:pointer;touch-action:manipulation}
 .icon:active{transform:scale(.94)}
-.chips{display:flex;gap:8px;margin-top:8px}
-.chip{border:1px solid #506c896d;background:#0a1625bd;border-radius:9px;padding:5px 11px;font-size:12px;color:#a7bbd1;font-weight:850}
-.chip strong{color:#fff4e3;font-size:15px;font-variant-numeric:tabular-nums}
+.chips{display:flex;gap:5px;margin-top:8px;justify-content:space-between}
+.chip{border:1px solid #506c896d;background:#0a1625bd;border-radius:9px;padding:5px 7px;font-size:11px;color:#a7bbd1;font-weight:850;white-space:nowrap}
+.chip strong{color:#fff4e3;font-size:13px;font-variant-numeric:tabular-nums}
 .bottom-hint{position:absolute;z-index:2;left:6px;right:6px;bottom:calc(env(safe-area-inset-bottom,0px) + 10px);font-size:11px;letter-spacing:.015em;color:#e4eafd8f;text-align:center;pointer-events:none;font-weight:750}
 .toast{position:absolute;z-index:5;top:40%;left:12px;right:12px;text-align:center;color:#fff4c4;font-size:19px;font-weight:1000;text-shadow:0 2px 3px #111,0 0 18px #f36a9c;opacity:0;transition:opacity .15s;pointer-events:none}
 .toast.show{opacity:1}
@@ -60,7 +60,7 @@ h1 em{color:#ff718c;font-style:normal}
     <button class="icon" id="sound" aria-label="効果音切替">♪</button>
     <button class="icon" id="pause" aria-label="一時停止">Ⅱ</button>
   </div></div>
-  <div class="chips"><div class="chip">残り <strong id="time">60</strong> 秒</div><div class="chip">⚡ <strong id="combo">0</strong> COMBO</div></div>
+  <div class="chips"><div class="chip">残り <strong id="time">60</strong> 秒</div><div class="chip" id="stage-chip">STAGE <strong id="stage">1/5</strong></div><div class="chip">⚡ <strong id="combo">0</strong> COMBO</div></div>
 </header>
 <div class="bottom-hint" id="foot">上のHPバーをつかむ → 敵へ叩きつける</div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -76,7 +76,7 @@ h1 em{color:#ff718c;font-style:normal}
    <div class="how-row"><span>🤖</span><p>主人公は勝手に動く。<strong>操作するのはHPバーだけ！</strong></p></div>
   </div>
   <button class="main-button" id="start">ゲームスタート →</button>
-  <p class="sub">スマホ縦画面専用 ｜ 60秒バトル ｜ インストール不要</p>
+  <p class="sub">スマホ縦画面専用 ｜ 全5ステージ ｜ インストール不要</p>
  </div>
 </section>
 <section class="overlay" id="result" hidden aria-live="polite">
@@ -106,8 +106,15 @@ const clamp = (n,a,b) => Math.max(a,Math.min(b,n));
 const lerp = (a,b,t) => a+(b-a)*t;
 const rand = (a,b) => a+Math.random()*(b-a);
 const TAU = Math.PI*2;
-const BOSS_MAX = 850;
-const TIME_MAX = 60;
+// ステージごとに耐久力・発射間隔・弾速・弾幕形状・敵の移動を変える。
+const STAGES = [
+ {name:"コア・ガーディアン", hp:1100, seconds:60, interval:2.45, speed:240, pattern:"single", move:1.0, damage:9, color:"#fc638c"},
+ {name:"スプレッド・ホーネット", hp:1450, seconds:65, interval:2.05, speed:260, pattern:"fan", move:1.55, damage:10, color:"#ffa84d"},
+ {name:"ツイン・ハンター", hp:1750, seconds:70, interval:1.8, speed:280, pattern:"cross", move:1.85, damage:11, color:"#7ff2c2"},
+ {name:"ストーム・センチネル", hp:2150, seconds:75, interval:1.65, speed:310, pattern:"wave", move:2.15, damage:13, color:"#8bd2ff"},
+ {name:"オーバーロード", hp:2600, seconds:80, interval:1.38, speed:335, pattern:"storm", move:2.5, damage:14, color:"#ff77ec"}
+];
+const TOTAL_STAGES = STAGES.length;
 let W=390,H=844,dpr=1,mode="menu",g=null,last=0,audio=null,sound=true,toastUntil=0,best=0;
 
 try { best=Number(localStorage.getItem("hpbar-build-best"))||0; } catch { best=0; }
@@ -148,12 +155,13 @@ function showToast(message,seconds=.9){
 function newGame(){
  const y=bossTargetY();
  return {
-  hp:100,bossHp:BOSS_MAX,t:0,score:0,combo:0,maxCombo:0,hits:0,blocks:0,hurts:0,
+  hp:100,stage:0,bossHp:STAGES[0].hp,t:0,score:0,combo:0,maxCombo:0,hits:0,blocks:0,hurts:0,
+  clearWait:0,clearedStages:0,lowHpNotified:false,healHintShown:false,
   bar:{x:W/2,y:homeY(),angle:0,vx:0,vy:0,grabbed:false,id:null,dx:0,dy:0,at:0,grabCount:0,releaseCount:0},
   hero:{x:W/2,y:H*.79,dir:1},boss:{x:W/2,y,flash:0,invuln:0},
   bullets:[],particles:[],labels:[],stars:Array.from({length:44},()=>({x:rand(0,W),y:rand(0,H),r:rand(.6,1.8)})),
   windup:0,nextAttack:2.7,attacks:0,enraged:false,playerInvuln:0,shake:0,flash:0,
-  hintTime:5,hitTime:-100,orb:null,orbCooldown:10
+  hintTime:4,hitTime:-100,orb:null,orbCooldown:10
  };
 }
 function start(){
@@ -175,13 +183,13 @@ function resume(){if(mode!=="paused")return;mode="playing";el("paused").hidden=t
 function end(won,why=""){
  if(mode!=="playing")return;
  mode=won?"win":"lose";g.bar.grabbed=false;g.bar.id=null;
- if(won)g.score+=Math.ceil(TIME_MAX-g.t)*20+Math.ceil(g.hp)*20;
+ if(won)g.score+=Math.ceil(STAGES[g.stage].seconds-g.t)*20+Math.ceil(g.hp)*20;
  if(g.score>best){best=g.score;try{localStorage.setItem("hpbar-build-best",String(best));}catch{}}
  el("result").hidden=false;el("foot").hidden=true;
  el("result-label").textContent=won?"BOSS DEFEATED":"GAME OVER";
  el("result-title").textContent=won?"撃破成功！":"ゲームオーバー";
  el("score").textContent=g.score.toLocaleString("ja-JP");
- el("result-detail").textContent=(won?"残りHP "+Math.ceil(g.hp)+" ／ ":""+why+" ／ ")
+ el("result-detail").textContent=(won?"全"+TOTAL_STAGES+"ステージ制覇！ 残りHP "+Math.ceil(g.hp)+" ／ ":""+why+" ／ "+(g.stage+1)+"/"+TOTAL_STAGES+"ステージ ／ ")
   +"攻撃 "+g.hits+"回 ／ 最大コンボ "+g.maxCombo+" ／ 弾ブロック "+g.blocks+"回";
  el("best").textContent="BEST SCORE： "+best.toLocaleString("ja-JP");
  tone(won?660:210,.3,won?"triangle":"sawtooth",.12,won?1000:70);
@@ -211,18 +219,19 @@ function onBar(x,y){
  const b=segment();return segmentDistance(x,y,b.ax,b.ay,b.bx,b.by)<30;
 }
 canvas.addEventListener("pointerdown",ev=>{
- if(mode!=="playing"||g.bar.grabbed)return;
+ if(mode!=="playing"||g.bar.grabbed||g.clearWait>0)return;
  const p=pointerPosition(ev);
  if(!onBar(p.x,p.y))return;
  ev.preventDefault();
  const b=g.bar;b.grabbed=true;b.id=ev.pointerId;b.dx=b.x-p.x;b.dy=b.y-p.y;
  b.at=performance.now();b.vx=b.vy=0;b.grabCount++;
  g.hintTime=0;
+ el("foot").hidden=true;
  canvas.setPointerCapture?.(ev.pointerId);
  tone(500,.04,"triangle",.04,730);
 });
 canvas.addEventListener("pointermove",ev=>{
- if(mode!=="playing"||!g.bar.grabbed||g.bar.id!==ev.pointerId)return;
+ if(mode!=="playing"||g.clearWait>0||!g.bar.grabbed||g.bar.id!==ev.pointerId)return;
  ev.preventDefault();
  const p=pointerPosition(ev),b=g.bar,now=performance.now();
  const dt=clamp((now-b.at)/1000,.009,.09);
@@ -254,45 +263,91 @@ canvas.addEventListener("pointercancel",pointerEnd);
 
 // 短時間に大量のヒットが出ないように間隔を設けつつ、速いドラッグほど威力を上げる。
 function bossHit(speed){
- if(mode!=="playing"||!g.bar.grabbed||g.boss.invuln>0)return;
+ if(mode!=="playing"||g.clearWait>0||!g.bar.grabbed||g.boss.invuln>0)return;
  const dmg=Math.round(clamp(25+speed*.035,31,90)*(g.combo>=4?1.13:1));
- g.bossHp=Math.max(0,g.bossHp-dmg);g.boss.flash=.28;g.boss.invuln=.27;
+ g.bossHp=Math.max(0,g.bossHp-dmg);g.boss.flash=.28;g.boss.invuln=.30;
  g.hits++;g.combo=g.t-g.hitTime<2.1?g.combo+1:1;g.maxCombo=Math.max(g.maxCombo,g.combo);g.hitTime=g.t;
  g.score+=dmg*10+Math.min(g.combo,10)*40;g.shake=11;g.flash=.18;
  spray(g.boss.x,g.boss.y,"#ff6698",22,230);spray(g.boss.x,g.boss.y,"#ffeab0",12,200);
  textPop(g.boss.x+rand(-26,26),g.boss.y-30,"-"+dmg,g.combo>2?"#ffe098":"#fff9ed");
  tone(150,.15,"sawtooth",.11,57);tone(600,.10,"triangle",.08,180);vibrate(20);
- if(g.bossHp<=0){end(true);return;}
- if(!g.enraged&&g.bossHp<BOSS_MAX*.48){
+ if(g.bossHp<=0){completeStage();return;}
+ if(!g.enraged&&g.bossHp<STAGES[g.stage].hp*.48){
   g.enraged=true;g.nextAttack=Math.min(g.nextAttack,g.t+1.1);showToast("⚠ BOSS 暴走！",1.2);
  }
 }
 
 // キャラへの被弾で上部の赤いHPバーが実際に短くなる。
 function hurt(dmg){
- if(g.playerInvuln>0||mode!=="playing")return;
+ if(g.playerInvuln>0||mode!=="playing"||g.clearWait>0)return;
  g.hp=Math.max(0,g.hp-dmg);g.hurts++;g.combo=0;g.playerInvuln=.8;g.shake=10;g.flash=.23;
  spray(g.hero.x,g.hero.y,"#ff637d",17,160);
  textPop(g.hero.x,g.hero.y-35,"HP -"+dmg,"#ff869a");
  tone(190,.2,"sawtooth",.12,60);vibrate(35);
+ if(g.hp>0 && g.hp<=62 && !g.lowHpNotified){
+  g.lowHpNotified=true;showToast("HPバーが短くなった！",1.15);
+ }
  if(g.hp<=0)end(false,"HPが0になった");
 }
 function heal(){
  if(!g.orb)return;
- const o=g.orb;g.orb=null;g.hp=Math.min(100,g.hp+24);g.score+=150;
- spray(o.x,o.y,"#75ffc0",17,150);textPop(o.x,o.y,"HP +24","#95ffd0");
+ const o=g.orb;g.orb=null;g.hp=Math.min(100,g.hp+28);g.score+=150;
+ spray(o.x,o.y,"#75ffc0",17,150);textPop(o.x,o.y,"HP +28","#95ffd0");
  tone(630,.16,"sine",.13,1050);
 }
+// 5種の射撃パターン。予兆後に位置を狙うため、バーで弾をブロックする判断を生む。
 function fire(){
- const dx=g.hero.x-g.boss.x,dy=g.hero.y-g.boss.y,ang=Math.atan2(dy,dx);
- const count=g.enraged&&g.attacks%2===1?3:1;
- for(let i=0;i<count;i++){
-  const a=ang+(i-(count-1)/2)*.24,v=g.enraged?255:207;
-  g.bullets.push({x:g.boss.x,y:g.boss.y+24,vx:Math.cos(a)*v,vy:Math.sin(a)*v,r:count===3?10:14,life:3});
+ const stage=STAGES[g.stage],dx=g.hero.x-g.boss.x,dy=g.hero.y-g.boss.y;
+ const ang=Math.atan2(dy,dx);
+ let angles;
+ switch(stage.pattern){
+  case "fan": angles=[ang-.24,ang,ang+.24];break;
+  case "cross": angles=g.attacks%2===0?[ang-.32,ang+.32]:[ang-.12,ang+.12];break;
+  case "wave": angles=[ang-.42,ang-.2,ang,ang+.2,ang+.42];break;
+  case "storm": angles=g.attacks%2===0?[ang-.38,ang-.19,ang,ang+.19,ang+.38]:[ang-.54,ang-.27,ang+.27,ang+.54];break;
+  default: angles=[ang];break;
  }
- g.attacks++;g.nextAttack=g.t+(g.enraged?2.25:3.1);
- spray(g.boss.x,g.boss.y+22,"#ffae72",12,120);tone(390,.16,"sawtooth",.09,110);
+ // 暴走はすべてのステージで攻撃密度が増す。
+ if(g.enraged&&angles.length===1)angles=[ang-.22,ang,ang+.22];
+ else if(g.enraged&&angles.length>1)angles.push(ang+.61);
+ for(const a of angles){
+  const v=stage.speed*(g.enraged?1.16:1);
+  g.bullets.push({x:g.boss.x,y:g.boss.y+24,vx:Math.cos(a)*v,
+   vy:Math.sin(a)*v,r:angles.length>3?9:angles.length>1?11:14,life:3});
+ }
+ g.attacks++;
+ g.nextAttack=g.t+stage.interval*(g.enraged?.75:1);
+ spray(g.boss.x,g.boss.y+22,stage.color,12,130);
+ tone(390,.16,"sawtooth",.09,110);
 }
+
+// 敵を倒したら戦闘を終了せず、ステージ遷移の短い演出へ入る。
+function completeStage(){
+ g.clearedStages++;
+ g.bullets.length=0;g.windup=0;g.bar.grabbed=false;g.bar.id=null;
+ g.bar.vx=g.bar.vy=0;g.bar.x=W/2;g.bar.y=homeY();g.bar.angle=0;
+ g.score+=Math.ceil(Math.max(0,STAGES[g.stage].seconds-g.t))*22;
+ if(g.stage===TOTAL_STAGES-1){end(true);return;}
+ g.clearWait=1.35;
+ tone(710,.2,"triangle",.11,1000);
+}
+
+// 次のステージに前の弾や当たり判定を持ち込まず、HPを全回復して再挑戦可能にする。
+function nextStage(){
+ g.stage++;
+ g.hp=100;
+ g.bossHp=STAGES[g.stage].hp;
+ g.t=0;g.enraged=false;g.boss.invuln=0;g.boss.flash=0;
+ g.boss.x=W/2;g.boss.y=bossTargetY();
+ g.windup=0;g.nextAttack=1.9;g.attacks=0;
+ g.bullets.length=0;g.orb=null;g.orbCooldown=8;
+ g.combo=0;g.playerInvuln=1.0;g.hitTime=-100;
+ g.bar.x=W/2;g.bar.y=homeY();g.bar.angle=0;
+ g.bar.grabbed=false;g.bar.id=null;g.bar.vx=g.bar.vy=0;
+ g.clearWait=0;
+ showToast("STAGE "+(g.stage+1)+" / "+TOTAL_STAGES+"  "+STAGES[g.stage].name,1.25);
+}
+
 function spray(x,y,color,n,power){
  for(let i=0;i<n;i++){
   if(g.particles.length>=150)g.particles.shift();
@@ -305,17 +360,25 @@ function textPop(x,y,text,color){g.labels.push({x,y,text,color,life:.85});}
 // 時間、キャラクター自動移動、敵弾、HPバーの帰還、勝敗を更新する。
 function update(dt){
  if(mode!=="playing"||!g)return;
- g.t+=dt;if(g.t>=TIME_MAX){end(false,"時間切れ");return;}
+ if(g.clearWait>0){
+  g.clearWait-=dt;
+  if(g.clearWait<=0)nextStage();
+  return;
+ }
+ g.t+=dt;if(g.t>=STAGES[g.stage].seconds){end(false,"時間切れ");return;}
  g.boss.invuln=Math.max(0,g.boss.invuln-dt);
  g.boss.flash=Math.max(0,g.boss.flash-dt);
  g.playerInvuln=Math.max(0,g.playerInvuln-dt);
  g.flash=Math.max(0,g.flash-dt*2.5);g.shake=Math.max(0,g.shake-dt*40);
  g.hintTime=Math.max(0,g.hintTime-dt);
+ if(g.hintTime<=0 && !el("foot").hidden)el("foot").hidden=true;
  const old=g.hero.x;
  g.hero.x=clamp(W/2+Math.sin(g.t*.88)*W*.22+Math.sin(g.t*1.84)*W*.07,35,W-35);
  g.hero.y=H*.78+Math.sin(g.t*2.2)*10;
  g.hero.dir=g.hero.x>=old?1:-1;
- g.boss.x=lerp(g.boss.x,W/2+Math.sin(g.t*(g.enraged?1.48:1.03))*W*.12,clamp(dt*5,0,1));
+ const mobility=STAGES[g.stage].move;
+ g.boss.x=lerp(g.boss.x,W/2+Math.sin(g.t*mobility)*W*(.11+g.stage*.016)
+   +Math.sin(g.t*mobility*.51)*W*.045,clamp(dt*(5+g.stage),0,1));
  g.boss.y=lerp(g.boss.y,bossTargetY()+Math.sin(g.t*1.65)*9,clamp(dt*5,0,1));
  if(!g.bar.grabbed){
   const k=clamp(dt*12,0,1);
@@ -324,7 +387,7 @@ function update(dt){
   if(Math.abs(g.bar.x-W/2)<.25)g.bar.x=W/2;
  }else if(performance.now()-g.bar.at>110){g.bar.vx=g.bar.vy=0;}
  if(g.t>=g.nextAttack&&g.windup<=0){
-  g.windup=g.enraged?.6:.9;g.nextAttack=Infinity;tone(250,.22,"triangle",.07,490);
+  g.windup=Math.max(.48,.94-g.stage*.085)*(g.enraged?.85:1);g.nextAttack=Infinity;tone(250,.22,"triangle",.07,490);
  }
  if(g.windup>0){g.windup-=dt;if(g.windup<=0){g.windup=0;fire();}}
  const bseg=g.bar.grabbed?segment():null;
@@ -337,12 +400,13 @@ function update(dt){
    g.bullets.splice(i,1);continue;
   }
   if(Math.hypot(b.x-g.hero.x,b.y-g.hero.y)<b.r+19){
-   g.bullets.splice(i,1);hurt(g.enraged?17:13);
+   g.bullets.splice(i,1);hurt(STAGES[g.stage].damage+(g.enraged?3:0));
   }
  }
  if(g.hp<=78){g.orbCooldown-=dt;if(!g.orb&&g.orbCooldown<=0){
   g.orb={x:rand(W*.28,W*.72),y:H*.61,life:8};
-  g.orbCooldown=13;showToast("緑の回復コアもバーで触ろう！");
+  g.orbCooldown=13;
+  if(!g.healHintShown){g.healHintShown=true;showToast("緑のコアでHP回復",.95);}
  }}
  if(g.orb){g.orb.life-=dt;if(g.orb.life<=0)g.orb=null;}
  if(g.combo>0&&g.t-g.hitTime>2.1)g.combo=0;
@@ -354,7 +418,9 @@ function update(dt){
  for(let i=g.labels.length-1;i>=0;i--){
   g.labels[i].life-=dt;g.labels[i].y-=dt*62;if(g.labels[i].life<=0)g.labels.splice(i,1);
  }
- el("time").textContent=String(Math.ceil(TIME_MAX-g.t));el("combo").textContent=String(g.combo);
+ el("time").textContent=String(Math.ceil(STAGES[g.stage].seconds-g.t));
+ el("stage").textContent=(g.stage+1)+"/"+TOTAL_STAGES;
+ el("combo").textContent=String(g.combo);
 }
 
 // 角丸ゲージ、発光エフェクト、敵キャラクターを外部素材なしで描画する。
@@ -399,18 +465,29 @@ function bossDraw(){
  polygon([[0,-55],[40,-45],[55,-22],[49,39],[30,52],[-30,52],[-49,39],[-55,-22],[-40,-45]],
   b.flash>0?"#ffe3df":g.enraged?"#8c3957":"#415873","#b3cbe0");
  polygon([[0,-39],[32,-34],[39,-8],[30,31],[-30,31],[-39,-8],[-32,-34]],"#182839","#303e58");
+ // ステージごとに機体外形を変える。後半ほど砲門と角が増えて危険な印象になる。
+ for(let i=0;i<g.stage;i++){
+  const side=i%2===0?-1:1;
+  const offset=12+Math.floor(i/2)*13;
+  polygon([[side*48,-25+offset],[side*(77+g.stage*3),-45+offset],
+   [side*62,-9+offset]],STAGES[g.stage].color,"#e9c6df");
+ }
+ if(g.stage>=2){
+  rounded(-42,36,25,13,5,STAGES[g.stage].color);
+  rounded(17,36,25,13,5,STAGES[g.stage].color);
+ }
  polygon([[-28,-11],[-8,-17],[-12,-3],[-28,1]],warn?"#ffe8a0":"#ff7998");
  polygon([[28,-11],[8,-17],[12,-3],[28,1]],warn?"#ffe8a0":"#ff7998");
- glow(0,10,49,warn?"#ffbd8caa":"#fd3f7799");
+ glow(0,10,49,warn?"#ffbd8caa":STAGES[g.stage].color+"99");
  ctx.fillStyle="#090d1b";ctx.beginPath();ctx.arc(0,10,22,0,TAU);ctx.fill();
- ctx.fillStyle=warn?"#ffe69d":"#fc638c";ctx.beginPath();ctx.arc(0,10,warn?18:15,0,TAU);ctx.fill();
+ ctx.fillStyle=warn?"#ffe69d":STAGES[g.stage].color;ctx.beginPath();ctx.arc(0,10,warn?18:15,0,TAU);ctx.fill();
  ctx.fillStyle="#fff5e2";ctx.beginPath();ctx.arc(-5,5,5,0,TAU);ctx.fill();
  ctx.restore();
- const pct=Math.max(0,g.bossHp/BOSS_MAX);
+ const pct=Math.max(0,g.bossHp/STAGES[g.stage].hp);
  ctx.font="900 12px system-ui";ctx.textAlign="center";ctx.fillStyle="#ffe0eb";
- ctx.fillText("BOSS   "+Math.ceil(pct*100)+"%",b.x,b.y-83*scale-11);
+ ctx.fillText(STAGES[g.stage].name+"  "+Math.ceil(pct*100)+"%",b.x,b.y-83*scale-11);
  rounded(b.x-52,b.y-82*scale,104,8,4,"#1a1b32","#8493ac",1);
- rounded(b.x-51,b.y-82*scale+1,102*pct,6,3,"#d580bb");
+ rounded(b.x-51,b.y-82*scale+1,102*pct,6,3,STAGES[g.stage].color);
  if(warn){
   ctx.save();ctx.setLineDash([9,7]);ctx.strokeStyle="#ff7997a0";ctx.lineWidth=2;
   ctx.beginPath();ctx.moveTo(b.x,b.y+20);ctx.lineTo(g.hero.x,g.hero.y);ctx.stroke();ctx.restore();
@@ -430,8 +507,6 @@ function heroDraw(){
  ctx.fillStyle="#1a3550";ctx.beginPath();ctx.arc(-6,-2,2,0,TAU);ctx.arc(8,-2,2,0,TAU);ctx.fill();
  ctx.strokeStyle="#153954";ctx.lineWidth=2;ctx.beginPath();ctx.arc(1,5,4,0,Math.PI);ctx.stroke();
  ctx.restore();
- ctx.textAlign="center";ctx.font="800 11px system-ui";ctx.fillStyle="#a4dce8";
- ctx.fillText("自動移動中",x,y+45);
 }
 function effectsDraw(){
  if(!g)return;
@@ -465,13 +540,8 @@ function healthBarDraw(){
  const y=homeY(),full=Math.min(W-38,104+Math.min(W*.58,228)),bw=barWidth();
  ctx.textAlign="center";ctx.textBaseline="alphabetic";
  ctx.font="1000 12px system-ui";ctx.fillStyle="#ffe0e3";
- if(H>=700)ctx.fillText("▼ ここをつかむ ▼",W/2,y-36);
+ if(g.hintTime>0&&H>=700)ctx.fillText("▼ ここをつかむ ▼",W/2,y-36);
  rounded(W/2-full/2,y-24,full,48,14,"#243149","#617593",2);
- const missing=1-g.hp/100;
- if(missing>.01){
-  ctx.font="850 10px system-ui";ctx.fillStyle="#f9a2af";
-  ctx.fillText("残りHPが減るとバーも短くなる",W/2,y+39);
- }
  const b=g.bar;
  ctx.save();ctx.translate(b.x,b.y);ctx.rotate(b.angle);
  const velocity=Math.hypot(b.vx,b.vy);
@@ -500,11 +570,23 @@ function draw(){
  ctx.save();
  if(g&&g.shake>0)ctx.translate(rand(-g.shake,g.shake),rand(-g.shake,g.shake));
  arena();
- if(g){bossDraw();heroDraw();effectsDraw();
+ if(g){if(g.clearWait<=0)bossDraw();heroDraw();effectsDraw();
   if(g.flash>0){ctx.fillStyle="rgba(255,72,120,"+(g.flash*.20)+")";ctx.fillRect(0,0,W,H);}
  }
  ctx.restore();
  healthBarDraw();
+ if(g && g.clearWait>0){
+  ctx.save();
+  ctx.fillStyle="#071126b3";ctx.fillRect(0,H*.30,W,H*.30);
+  ctx.textAlign="center";ctx.fillStyle="#ffe6ad";
+  ctx.font="1000 "+Math.min(30,W*.075)+"px system-ui";
+  ctx.fillText("STAGE "+(g.stage+1)+" CLEAR!",W/2,H*.40);
+  ctx.fillStyle="#e9f4ff";ctx.font="850 16px system-ui";
+  ctx.fillText("NEXT  STAGE "+(g.stage+2)+" / "+TOTAL_STAGES,W/2,H*.46);
+  ctx.fillStyle="#8ef0c3";ctx.font="800 12px system-ui";
+  ctx.fillText("HP 全回復",W/2,H*.50);
+  ctx.restore();
+ }
 }
 function loop(timestamp){
  const dt=Math.min(.034,Math.max(0,(timestamp-last)/1000||0));last=timestamp;
@@ -517,7 +599,9 @@ requestAnimationFrame(loop);
 // 実ブラウザQAで読み取る状態。実際の操作・勝敗には介入しない。
 window.__hpBarGame={
  snapshot:()=>g?({
-  status:mode,hp:g.hp,bossHp:g.bossHp,time:TIME_MAX-g.t,
+  status:mode,hp:g.hp,bossHp:g.bossHp,bossHpMax:STAGES[g.stage].hp,
+  stage:g.stage+1,totalStages:TOTAL_STAGES,stageName:STAGES[g.stage].name,
+  clearWait:g.clearWait,clearedStages:g.clearedStages,time:STAGES[g.stage].seconds-g.t,
   hits:g.hits,blocks:g.blocks,combo:g.combo,score:g.score,
   barX:g.bar.x,barY:g.bar.y,barAngle:g.bar.angle,barWidth:barWidth(),
   barHomeY:homeY(),grabbed:g.bar.grabbed,grabCount:g.bar.grabCount,
