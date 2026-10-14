@@ -296,6 +296,7 @@ function start(){
  ["menu","result","paused"].forEach(id=>$(id).hidden=true);
  $("hud").hidden=false;$("foot").hidden=false;
  tone(390,.14,"triangle",.07,650);
+ window.KikutaAnalytics?.track("game_start");
 }
 
 // 一時停止時は触っていたHPバーを安全に離し、ポーズ画面から再開できるようにする。
@@ -313,6 +314,7 @@ function finish(won,reason=""){
  if(mode!=="playing")return;
  mode=won?"win":"lose";g.bar.grabbed=false;
  if(won)g.score+=Math.ceil(g.hp)*30+CLEANUP_SECONDS*100;
+ window.KikutaAnalytics?.track(won?"game_clear":"game_over",g.elapsed);
  if(g.score>best){best=g.score;try{localStorage.setItem("hpbar-surround-best",String(best));}catch{}}
  $("result").hidden=false;$("foot").hidden=true;
  $("result-label").textContent=won?"RUSH CLEARED":"GAME OVER";
@@ -335,7 +337,7 @@ function showTitle(){
 $("result-home").addEventListener("click",showTitle);
 $("pause-home").addEventListener("click",showTitle);
 $("start").addEventListener("click",start);
-$("retry").addEventListener("click",start);
+$("retry").addEventListener("click",()=>{window.KikutaAnalytics?.track("retry");start();});
 $("pause").addEventListener("click",pause);
 $("resume").addEventListener("click",resume);
 $("sound").addEventListener("click",()=>{sound=!sound;$("sound").textContent=sound?"♪":"×";if(sound)tone(670,.08);});
