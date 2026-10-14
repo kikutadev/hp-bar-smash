@@ -120,7 +120,7 @@ const TYPES={
  medic:{color:"#b993ff",label:"回復",hp:55,speed:.6,damage:3},
  guard:{color:"#ffd07a",label:"装甲",hp:90,speed:.88,damage:4}
 };
-// 回復は無制限。Canvas内に収まるよう棒の描画寸法だけを制限する。
+// HPも棒の長さも無制限。見切れた部分はCanvasだけが自然に切り抜く。
 const START_HP=30;
 const BASE_BAR_HEIGHT=48;
 let W=390,H=844,dpr=1,last=0,mode="menu",g=null,audio=null,sound=true,toastUntil=0,best=0;
@@ -128,16 +128,12 @@ try{best=Number(localStorage.getItem("hpbar-surround-best"))||0;}catch{}
 
 // プレイヤーを戦場の中心に固定し、上部のHPバーに手が届く領域を確保する。
 function center(){return {x:W/2,y:H*.545};}
-function barHeight(){
- // HP100以降は縦幅も増加。画面サイズによる物理的な最大幅とHP上限は別物。
- return BASE_BAR_HEIGHT+Math.min(64,Math.max(0,(g?.hp||START_HP)-100)*.16);
-}
-function homeY(){
- // 上方向には伸ばさず、通常のHUDと重ならないよう追加厚みを下へ伸ばす。
- return Math.max(clamp(H*.17,125,150),135)+(barHeight()-BASE_BAR_HEIGHT)/2;
-}
+// 赤いHPバーは1本だけ。HP100超でも単純な線形成長を続け、途中で画面幅に切り詰めない。
+function barHeight(){return BASE_BAR_HEIGHT;}
+function homeY(){return Math.max(clamp(H*.17,125,150),135);}
 function barWidth(){
- return Math.min(W-24,101+((g?.hp||START_HP)/100)*Math.min(232,W*.58));
+ // 30HPから増やした分をそのまま実体の長さへ反映する。画面より長くなっても攻撃判定は保持。
+ return 101+Math.max(0,g?.hp??START_HP)*Math.min(232,W*.58)/100;
 }
 function ringRadii(){return {x:W*.425,y:Math.min(H*.25,Math.max(93,H*.545-homeY()-75))};}
 function living(){return g.enemies.filter(e=>e.hp>0);}
@@ -686,45 +682,45 @@ function drawEffects(){
  ctx.globalAlpha=1;
 }
 
-// 画面上のHPバーはキャラクターの武器ではなくUIそのものとして独立描画する。
+// HPバーは単独で描画する。ドラッグ元に空枠を残さず、金ゲージも追加せず、赤い棒だけ伸ばす。
 function drawBar(){
- const y=homeY(),width=barWidth(),height=barHeight(),full=Math.min(W-24,101+Math.min(232,W*.58));
- const b=g.bar;
- roundRect(W/2-full/2,y-height/2,full,height,14,"#263249","#697e9d",2);
- ctx.save();ctx.translate(b.x,b.y);ctx.rotate(b.angle);
- const surplus=Math.max(0,g.hp-100);
- if(surplus>0){ctx.shadowColor="#ffc978";ctx.shadowBlur=Math.min(35,14+Math.log2(1+surplus)*2);}
- else if(b.grabbed&&Math.hypot(b.vx,b.vy)>140){ctx.shadowColor="#ff799a";ctx.shadowBlur=22;}
- roundRect(-width/2,-height/2,width,height,13,"#28192d",surplus>0?"#ffe7a6":"#fff0e5",3);
- const gradient=ctx.createLinearGradient(0,-height/2+5,0,height/2-5);
- gradient.addColorStop(0,surplus>0?"#ffe6a8":"#ffc5ca");
- gradient.addColorStop(.40,"#ff6f8d");
- gradient.addColorStop(1,"#e82a5b");
- roundRect(-width/2+5,-height/2+5,width-10,height-10,9,gradient);
- ctx.shadowBlur=0;
- if(surplus>0){
-  // HP100超過分は琥珀色の積層ゲージで進行を表現する。100単位を超えても繰り返し蓄積可能。
-  const segment=(surplus%100===0?100:surplus%100)/100;
-  const inner=width-14;
-  roundRect(-inner/2,height/2-10,inner,5,2.5,"#4c3040");
-  roundRect(-inner/2,height/2-10,inner*segment,5,2.5,"#ffe39a");
+ const y=homeY(),width=barWidth(),height=barHeight(),bar=g.bar;
+ ctx.save();
+ ctx.translate(bar.x,bar.y);
+ ctx.rotate(bar.angle);
+ if(bar.grabbed&&Math.hypot(bar.vx,bar.vy)>140){
+  ctx.shadowColor="#ff799a";
+  ctx.shadowBlur=18;
  }
- ctx.fillStyle="#fffdf5";ctx.textBaseline="middle";ctx.textAlign="center";
+ const fill=ctx.createLinearGradient(0,-height/2,0,height/2);
+ fill.addColorStop(0,"#ffb7c5");
+ fill.addColorStop(.4,"#ff6585");
+ fill.addColorStop(1,"#eb315f");
+ // つかんだときも定位置のゴースト枠を描かない。
+ roundRect(-width/2,-height/2,width,height,13,fill,"#ffe8ef",3);
+ ctx.shadowBlur=0;
  const label="♥ HP "+Math.ceil(g.hp);
+ ctx.fillStyle="#fffdf7";
+ ctx.textBaseline="middle";
+ ctx.textAlign="center";
  let fontSize=16;
  ctx.font="1000 "+fontSize+"px system-ui";
  while(fontSize>11&&ctx.measureText(label).width>width-20){
-  fontSize--;ctx.font="1000 "+fontSize+"px system-ui";
+  fontSize--;
+  ctx.font="1000 "+fontSize+"px system-ui";
  }
  ctx.fillText(label,0,0);
  ctx.restore();
  if(g.intro>0){
   ctx.globalAlpha=clamp(g.intro/.65,0,1);
-  ctx.textAlign="center";ctx.fillStyle="#ffe3bd";ctx.font="900 13px system-ui";
-  if(H>700)ctx.fillText("▼ ここをつかむ ▼",W/2,clamp(H*.17,125,150)-37);
-  ctx.strokeStyle="#061427";ctx.lineWidth=4;
-  ctx.strokeText("バーをつかんで周囲の敵を薙ぎ払え！",W/2,y+76);
-  ctx.fillText("バーをつかんで周囲の敵を薙ぎ払え！",W/2,y+76);
+  ctx.textAlign="center";
+  ctx.fillStyle="#ffe3bd";
+  ctx.font="900 13px system-ui";
+  if(H>700)ctx.fillText("▼ ここをつかむ ▼",W/2,homeY()-37);
+  ctx.strokeStyle="#061427";
+  ctx.lineWidth=4;
+  ctx.strokeText("バーをつかんで周囲の敵を薙ぎ払え！",W/2,homeY()+76);
+  ctx.fillText("バーをつかんで周囲の敵を薙ぎ払え！",W/2,homeY()+76);
   ctx.globalAlpha=1;
  }
 }
