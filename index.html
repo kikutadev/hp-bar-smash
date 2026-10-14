@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b1024">
 <meta name="description" content="中央の主人公へ四方八方から迫る敵の大群を、伸びるHPバーで薙ぎ払うアクション。">
+<link rel="canonical" href="https://games.kikuta.dev/hp-bar-smash/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="HPバーで殴れ！">
+<meta property="og:description" content="HPバーを振り回して90秒防衛！迫る敵を薙ぎ払うサバイバルアクション。">
+<meta property="og:url" content="https://games.kikuta.dev/hp-bar-smash/">
+<meta property="og:image" content="https://games.kikuta.dev/site-assets/hp-bar-smash-cover.webp">
+<meta name="twitter:card" content="summary_large_image">
 <title>HPバーで殴れ！</title>
 <style>
 :root{font-family:system-ui,-apple-system,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;color-scheme:dark}
@@ -43,7 +50,13 @@ h1 em{color:#ff718c;font-style:normal}
 .how-row strong{color:#fff}
 .main-button{width:100%;border:0;border-radius:15px;padding:15px 10px;background:linear-gradient(135deg,#ff718c,#f13c68);color:#fff;font-weight:1000;font-size:18px;box-shadow:0 5px 0 #8e2949,0 10px 26px #ff527044;cursor:pointer;touch-action:manipulation}
 .main-button:active{transform:translateY(3px);box-shadow:0 2px 0 #8e2949}
-.main-button:focus-visible,.icon:focus-visible{outline:3px solid #fff;outline-offset:2px}
+/* アプリのホームとゲーム一覧への戻り口は結果・中断・開始の全画面に固定しておく。 */
+.secondary-button{display:block;width:100%;margin-top:10px;border:1px solid #7890ac75;border-radius:13px;
+padding:12px 10px;background:#202e48;color:#f4f8ff;font:850 14px system-ui;text-decoration:none;cursor:pointer;touch-action:manipulation}
+.secondary-button:hover{background:#2c415f}
+.back-to-games{display:inline-block;margin-top:17px;font:800 12px system-ui;color:#c7dcf5;text-underline-offset:4;padding:9px 12px}
+.back-to-games:hover{color:#fff}
+.main-button:focus-visible,.icon:focus-visible,.secondary-button:focus-visible,.back-to-games:focus-visible{outline:3px solid #fff;outline-offset:2px}
 .sub{font-size:11px;line-height:1.65;color:#91a5bc;margin:14px 0 0}
 .result-title{font-size:36px;font-weight:1000;margin:12px 0 8px}
 .result-score{font-size:52px;color:#ffd18b;font-weight:1000;font-variant-numeric:tabular-nums;margin:0 0 14px}
@@ -76,6 +89,7 @@ h1 em{color:#ff718c;font-style:normal}
    <div class="how-row"><span>🤖</span><p><strong>HP30からスタート。緑の+15で100を超えても増える</strong></p></div>
   </div>
   <button class="main-button" id="start">ゲームスタート →</button>
+  <a class="back-to-games" href="https://games.kikuta.dev/">← KIKUTA GAMESの一覧へ</a>
   <p class="sub">90秒防衛＋残敵掃討 ｜ 最終25秒は大量ラッシュ</p>
  </div>
 </section>
@@ -86,13 +100,17 @@ h1 em{color:#ff718c;font-style:normal}
   <div class="result-score" id="score">0</div>
   <p class="result-detail" id="result-detail"></p>
   <button class="main-button" id="retry">もう一度あそぶ →</button>
+  <button class="secondary-button" id="result-home">ゲームのタイトルへ戻る</button>
+  <a class="back-to-games" href="https://games.kikuta.dev/">← KIKUTA GAMESの一覧へ</a>
   <p class="sub" id="best"></p>
  </div>
 </section>
 <section class="overlay" id="paused" hidden>
  <div class="card"><div class="eyebrow">PAUSED</div><div class="result-title">一時停止</div>
  <p class="result-detail">HPバーは画面上部に戻っています。</p>
- <button class="main-button" id="resume">戦闘に戻る →</button></div>
+ <button class="main-button" id="resume">戦闘に戻る →</button>
+ <button class="secondary-button" id="pause-home">ゲームのタイトルへ戻る</button>
+ <a class="back-to-games" href="https://games.kikuta.dev/">← KIKUTA GAMESの一覧へ</a></div>
 </section>
 </main>
 <script>
@@ -106,14 +124,15 @@ const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
 const lerp=(a,b,t)=>a+(b-a)*t;
 const TAU=Math.PI*2;
 const rand=(a,b)=>a+Math.random()*(b-a);
-// 制限時間までの4段階の増援。最後の25秒は至近距離・大量出現の最終ラッシュ。
+// 初期は画面の外周付近、時間経過で内側へ。spawnMin/Max は可視範囲までの距離の比率。
+// 固定ピクセルでは縦横比で初期から近すぎ、さらにclipで敵が重なるため、方向別の距離を使う。
 const BATTLE_SECONDS=90;
 const CLEANUP_SECONDS=12;
 const WAVES=[
- {name:"開戦",from:0,interval:.75,batch:3,cap:45,speed:40,spawnMin:132,spawnMax:165},
- {name:"包囲拡大",from:15,interval:.64,batch:4,cap:70,speed:53,spawnMin:109,spawnMax:140},
- {name:"猛攻",from:40,interval:.52,batch:6,cap:108,speed:68,spawnMin:87,spawnMax:118},
- {name:"最終ラッシュ",from:65,interval:.32,batch:11,cap:170,speed:96,spawnMin:56,spawnMax:86}
+ {name:"開戦",from:0,interval:1.25,batch:2,cap:28,speed:22,spawnMin:.89,spawnMax:.98},
+ {name:"包囲拡大",from:15,interval:.92,batch:3,cap:58,speed:37,spawnMin:.69,spawnMax:.82},
+ {name:"猛攻",from:40,interval:.59,batch:5,cap:105,speed:57,spawnMin:.48,spawnMax:.61},
+ {name:"最終ラッシュ",from:65,interval:.34,batch:10,cap:170,speed:90,spawnMin:.24,spawnMax:.39}
 ];
 const TYPES={
  runner:{color:"#75c6ff",label:"高速",hp:42,speed:1.15,damage:2},
@@ -154,14 +173,28 @@ function barWidth(){
 function living(){return g.enemies.filter(e=>e.hp>0);}
 function remaining(){return g.enemies.length;}
 
-// 出現距離をpxで扱い、楕円上への位置固定を撤廃する。
+// 中心から指定方向にまっすぐ進み、可視の戦場矩形に達する距離を取得する。
+// 横長/縦長の画面で同じ「外周から徐々に近づく」感覚を維持する。
+function distanceToArenaEdge(angle){
+ const c=center(),dx=Math.cos(angle),dy=Math.sin(angle);
+ const x=Math.abs(dx)<.00001?Infinity:(dx>0?(W-20-c.x): (20-c.x))/dx;
+ const y=Math.abs(dy)<.00001?Infinity:(dy>0?(H-28-c.y):(homeY()+62-c.y))/dy;
+ return Math.max(24,Math.min(x,y));
+}
+
+// 射手は一定距離で足を止めて弾を撃ち、近接敵だけが主人公へ突入する。
+// 出現は四方の可視外周から開始し、波が進むほど初期距離が短くなる。
 function createEnemy(angle){
  const id=g.nextEnemyId++;
  const choice=Math.random();
  const kind=choice<.64?"runner":choice<.83?"gunner":choice<.94?"guard":"medic";
  const cfg=TYPES[kind],maxHp=cfg.hp+g.wave*5,phase=WAVES[g.wave];
- const radius=rand(phase.spawnMin,phase.spawnMax);
- const stopRadius=g.wave===WAVES.length-1?Math.min(radius-4,20+((id*7)%8)*10):0;
+ const arenaRadius=distanceToArenaEdge(angle);
+ const ranged=kind==="gunner"||kind==="guard";
+ const standOff=ranged?Math.min(108,arenaRadius*.72):0;
+ const radius=Math.min(arenaRadius,Math.max(arenaRadius*rand(phase.spawnMin,phase.spawnMax),
+  ranged?standOff+10:0));
+ const stopRadius=ranged?standOff:(g.wave===WAVES.length-1?Math.min(radius-4,20+((id*7)%8)*5):0);
  const e={
   id,kind,angle,radius,stopRadius,
   hp:maxHp,maxHp,phase:rand(0,TAU),invuln:0,flash:0,
@@ -193,12 +226,13 @@ function spawnBatch(){
  g.peakAlive=Math.max(g.peakAlive,remaining());
 }
 
-// 位置計算も真円の距離と角度を使用し、楕円形の見えない移動レーンをなくす。
+// 真円の方向・距離から座標を求める。座標のclampは描画上の保険に限定する。
+// 半径を小数1pxへ丸めると敵が中央へ瞬間移動するため、ノックバック後もpx単位で維持。
 function positionEnemy(e){
  const c=center(),sway=Math.sin((g?.elapsed||0)*1.1+e.phase)*1.7;
  const distance=Math.max(0,e.radius+sway);
- e.x=clamp(c.x+Math.cos(e.angle)*distance,12,W-12);
- e.y=clamp(c.y+Math.sin(e.angle)*distance,homeY()+64,H-22);
+ e.x=clamp(c.x+Math.cos(e.angle)*distance,20,W-20);
+ e.y=clamp(c.y+Math.sin(e.angle)*distance,homeY()+62,H-28);
 }
 
 // 端末回転・画面サイズ変更時にUIと敵の座標を再配置する。
@@ -290,6 +324,16 @@ function finish(won,reason=""){
  $("best").textContent="BEST SCORE： "+best.toLocaleString("ja-JP");
  tone(won?700:230,.26,won?"triangle":"sawtooth",.11,won?950:80);
 }
+// 途中離脱・ゲームオーバー後も一度でゲームのタイトルへ戻れる。
+// 完全なポータル復帰は明示的な一覧リンクに任せ、ブラウザの履歴には依存しない。
+function showTitle(){
+ mode="menu";g=null;
+ $("menu").hidden=false;$("result").hidden=true;$("paused").hidden=true;
+ $("hud").hidden=true;$("foot").hidden=false;
+ $("toast").classList.remove("show");
+}
+$("result-home").addEventListener("click",showTitle);
+$("pause-home").addEventListener("click",showTitle);
 $("start").addEventListener("click",start);
 $("retry").addEventListener("click",start);
 $("pause").addEventListener("click",pause);
@@ -396,7 +440,7 @@ function hitEnemy(e,speed,vx,vy){
  if(shield){damage=Math.max(12,Math.round(damage*.28));g.guardBlocks++;}
  e.hp=Math.max(0,e.hp-damage);e.invuln=.145;e.flash=.13;
  // ノックバックで一掃した方向の敵が押し戻され、敵の密集を緩和する。
- e.radius=clamp(e.radius+.045,.14,1.45);
+ e.radius=Math.min(distanceToArenaEdge(e.angle),e.radius+Math.min(19,8+speed*.004));
  g.hits++;g.combo=g.elapsed-g.lastHit<2?g.combo+1:1;
  g.maxCombo=Math.max(g.maxCombo,g.combo);g.lastHit=g.elapsed;
  g.score+=damage*8+Math.min(g.combo,16)*45;g.shake=5;g.flash=.06;
@@ -471,18 +515,21 @@ function act(e){
   return;
  }
  if(e.kind==="runner"){
-  e.radius=clamp(e.radius-.045,.085,1.5);
+  // 高速型の追加突進もpx単位の短い移動だけにし、ゼロ距離への瞬間移動を防ぐ。
+  e.radius=Math.max(e.stopRadius,e.radius-8);
   e.nextAction=3.3;
   return;
  }
  // すべての射手が個別に攻撃する。群れ全体の発射制限・同時弾数制限は設けない。
  // 各弾に固有の威力を保持し、着弾した弾を一発ずつ漏れなくHPへ反映する。
  const angle=Math.atan2(g.hero.y-e.y,g.hero.x-e.x);
- const velocity=140+g.wave*10;
+ // 見える発射予兆→発光弾→残像の順に読み取れる速度と寸法にする。
+ const velocity=113+g.wave*6, color=e.kind==="gunner"?"#ff799c":"#ffd281";
  g.bullets.push({
   x:e.x,y:e.y,vx:Math.cos(angle)*velocity,vy:Math.sin(angle)*velocity,
-  r:5.6,life:3.7,damage:projectileDamage(e.kind,g.elapsed)
+  r:7.5,life:3.7,damage:projectileDamage(e.kind,g.elapsed),color
  });
+ spray(e.x,e.y,color,4,48);
  e.nextAction=e.kind==="gunner"?3.1-g.wave*.1:4.0;
 }
 
@@ -492,7 +539,9 @@ function updateEnemies(dt){
   e.invuln=Math.max(0,e.invuln-dt);
   e.flash=Math.max(0,e.flash-dt);
   e.contactCooldown=Math.max(0,e.contactCooldown-dt);
-  const cfg=TYPES[e.kind],speed=WAVES[g.wave].speed*cfg.speed;
+  // 狭い端末で初期接敵時間が短くなりすぎないよう移動速度を補正する。
+  const screenScale=clamp(Math.min(W/390,H/844),.70,1);
+  const cfg=TYPES[e.kind],speed=WAVES[g.wave].speed*cfg.speed*screenScale;
   e.radius=Math.max(e.stopRadius,e.radius-dt*speed);
   e.angle+=Math.sin(g.elapsed*.5+e.phase)*dt*.045;
   e.entryDelay=Math.max(0,e.entryDelay-dt);
@@ -697,6 +746,14 @@ function drawEnemies(){
   const t=TYPES[e.kind],flash=e.flash>0,ready=e.nextAction<.55;
   ctx.save();ctx.translate(e.x,e.y);
   if(e.entryDelay>0)glow(0,0,radius*3.2,t.color+"a5");
+  if((e.kind==="gunner"||e.kind==="guard")&&e.nextAction<.85&&e.nextAction>0){
+   ctx.save();ctx.rotate(Math.atan2(g.hero.y-e.y,g.hero.x-e.x));
+   ctx.strokeStyle=e.kind==="gunner"?"#ff799c99":"#ffd28199";
+   ctx.lineWidth=1.8;ctx.setLineDash([6,7]);
+   ctx.beginPath();ctx.moveTo(radius,0);
+   ctx.lineTo(Math.hypot(g.hero.x-e.x,g.hero.y-e.y)-16,0);ctx.stroke();
+   ctx.setLineDash([]);ctx.restore();
+  }
   if(ready)glow(0,0,radius*2.5,t.color+"7d");
   if(flash)glow(0,0,radius*2.7,"#ffffff83");
   ctx.fillStyle="#07102098";ctx.beginPath();ctx.ellipse(0,radius+5,radius*1.12,4,0,0,TAU);ctx.fill();
@@ -757,8 +814,14 @@ function drawHero(){
 // 弾・回復コア・ヒット演出を重ね、同時表示数の上限でモバイルの描画負荷を抑える。
 function drawEffects(){
  for(const b of g.bullets){
-  ctx.fillStyle="#ffba86";ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,TAU);ctx.fill();
-  ctx.strokeStyle="#ff6688";ctx.lineWidth=1.6;ctx.stroke();
+  // 発射源から着弾まで追える光跡と輪郭。敵の色に合わせて射線を区別する。
+  const length=23,speed=Math.hypot(b.vx,b.vy)||1;
+  ctx.strokeStyle=b.color+"b3";ctx.lineWidth=b.r*1.35;ctx.lineCap="round";
+  ctx.beginPath();ctx.moveTo(b.x-b.vx/speed*length,b.y-b.vy/speed*length);
+  ctx.lineTo(b.x,b.y);ctx.stroke();
+  glow(b.x,b.y,19,b.color+"77");
+  ctx.fillStyle="#fff9e4";ctx.beginPath();ctx.arc(b.x,b.y,b.r*.78,0,TAU);ctx.fill();
+  ctx.strokeStyle=b.color;ctx.lineWidth=2.7;ctx.stroke();
  }
  for(const o of g.pickups){
   const pulse=1+Math.sin(g.elapsed*6)*.15;
