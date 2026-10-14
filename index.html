@@ -123,7 +123,8 @@ const TYPES={
 // HPも棒の長さも無制限。見切れた部分はCanvasだけが自然に切り抜く。
 const START_HP=30;
 const BASE_BAR_HEIGHT=48;
-const CONTACT_REPEAT_SECONDS=.72;
+// 接触型の「攻撃周期」。プレイヤーに無敵時間は付かず、敵ごとの攻撃が独立する。
+const CONTACT_ATTACK_INTERVAL=.36;
 
 // 28秒ごとに接触・弾の威力が少しずつ上昇する。100秒以降も成長は継続する。
 function damageTier(elapsed){
@@ -225,7 +226,6 @@ function toast(text,seconds=1){
 function fresh(){
  const game={wave:0,elapsed:0,hp:START_HP,hero:center(),
   enemies:[],spawned:0,peakAlive:0,nextEnemyId:0,spawnTimer:.18,spawnBatchIndex:0,
-  nextRangedShotAt:0,
   defeated:0,hits:0,blocks:0,healsCollected:0,
   score:0,combo:0,maxCombo:0,lastHit:-99,medicHeals:0,guardBlocks:0,
   intro:3.7,hitFlash:0,lowHpNotified:false,damageTaken:0,hitsTaken:0,contactHits:0,projectileHits:0,
@@ -445,26 +445,20 @@ function act(e){
   e.nextAction=3.3;
   return;
  }
- // 全射手がそれぞれ連射し続けると、初期HP30では何もできないうちに倒される。
- // そこで射撃だけは敵集団共通の発射間隔を使い、近接攻撃は各個体ごとに独立させる。
- if(g.elapsed<g.nextRangedShotAt){
-  e.nextAction=rand(.24,.43);
-  return;
- }
- if(g.bullets.length<65){
-  const a=Math.atan2(g.hero.y-e.y,g.hero.x-e.x);
-  const v=140+g.wave*10;
-  g.bullets.push({x:e.x,y:e.y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,
-   r:5.6,life:3.7,damage:projectileDamage(e.kind,g.elapsed)});
-  g.nextRangedShotAt=g.elapsed+Math.max(.80,2.05-g.wave*.29);
- }
+ // すべての射手が個別に攻撃する。群れ全体の発射制限・同時弾数制限は設けない。
+ // 各弾に固有の威力を保持し、着弾した弾を一発ずつ漏れなくHPへ反映する。
+ const angle=Math.atan2(g.hero.y-e.y,g.hero.x-e.x);
+ const velocity=140+g.wave*10;
+ g.bullets.push({
+  x:e.x,y:e.y,vx:Math.cos(angle)*velocity,vy:Math.sin(angle)*velocity,
+  r:5.6,life:3.7,damage:projectileDamage(e.kind,g.elapsed)
+ });
  e.nextAction=e.kind==="gunner"?3.1-g.wave*.1:4.0;
 }
 
 // 各敵自身が再攻撃までの間隔を管理する。複数体の同時接触を全体無敵時間で潰さない。
 function updateEnemies(dt){
  for(const e of living()){
-  if(mode!=="playing")break;
   e.invuln=Math.max(0,e.invuln-dt);
   e.flash=Math.max(0,e.flash-dt);
   e.contactCooldown=Math.max(0,e.contactCooldown-dt);
@@ -473,11 +467,10 @@ function updateEnemies(dt){
   e.angle+=Math.sin(g.elapsed*.5+e.phase)*dt*.045;
   positionEnemy(e);
   if(Math.hypot(e.x-g.hero.x,e.y-g.hero.y)<26&&e.contactCooldown<=0){
-   e.contactCooldown=CONTACT_REPEAT_SECONDS;
+   e.contactCooldown=CONTACT_ATTACK_INTERVAL;
    hurt(contactDamage(e.kind,g.elapsed),"contact");
-   // 攻撃した個体だけ少し押し戻す。別の個体の攻撃は止めない。
-   e.radius=Math.max(e.radius,.39);
-   positionEnemy(e);
+   // 接触型の敵は接触を保って攻撃を続ける。プレイヤーに被弾無敵はない。
+   // 攻撃間隔は敵側だけで管理する（重なっている別の敵を待たせない）。
   }
   e.nextAction-=dt;
   if(e.nextAction<=0)act(e);
@@ -502,7 +495,8 @@ function hurt(amount,source){
   g.lowHpNotified=true;
   toast("HPが残りわずか！",.85);
  }
- if(g.hp<=0)finish(false,"HPが0になった");
+ // HPが0になるフレームでも、そのフレーム内の残りの攻撃を集計する。
+ // すべての着弾を処理したあとupdateで敗北を確定する。
 }
 
 // 個別の被弾はすべて計上したあと、短いフレーム内の数字だけ統合する。
@@ -586,6 +580,7 @@ function update(dt){
   }
  }
  flushDamageFeedback();
+ if(g.hp<=0){finish(false,"HPが0になった");return;}
  if(mode!=="playing")return;
  // 12秒に1回の補給と22体撃破ごとの報酬で、上限なく成長できるが簡単には増え過ぎない。
  g.pickupTimer-=dt;
