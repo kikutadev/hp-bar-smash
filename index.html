@@ -60,7 +60,7 @@ h1 em{color:#ff718c;font-style:normal}
     <button class="icon" id="sound" aria-label="効果音切替">♪</button>
     <button class="icon" id="pause" aria-label="一時停止">Ⅱ</button>
   </div></div>
-  <div class="chips"><div class="chip">撃破 <strong id="time">0</strong> 体</div><div class="chip" id="stage-chip">STAGE <strong id="stage">1/5</strong></div><div class="chip">敵 <strong id="enemy-count">0</strong> 体</div></div>
+  <div class="chips"><div class="chip">撃破 <strong id="time">0</strong> 体</div><div class="chip" id="stage-chip"><span id="timer-label">残り</span> <strong id="stage">90</strong> 秒</div><div class="chip">敵 <strong id="enemy-count">0</strong> 体</div></div>
 </header>
 <div class="bottom-hint" id="foot">HP上限なし。緑の+15でHPバーが成長！</div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -68,15 +68,15 @@ h1 em{color:#ff718c;font-style:normal}
  <div class="card">
   <div class="eyebrow">THE HEALTH BAR IS YOUR WEAPON</div>
   <h1 id="title"><em>HPバー</em>で<br>殴れ！</h1>
-  <p class="tagline">最初は少数、やがて画面を埋め尽くす大群！<br>HPバーをつかんだまま薙ぎ払い続けろ！</p>
+  <p class="tagline">90秒防衛、最後の25秒は超大量ラッシュ！<br>増援が止まったら残敵を全滅させてクリア！</p>
   <div class="preview" aria-hidden="true"><div class="preview-hp">♥ HP 30</div><div class="preview-arrow">↓　↓　↓</div><div class="preview-boss" style="font-size:32px;bottom:10px;white-space:nowrap">🔴　🟢<span style="font-size:36px">🧍</span>🟡　🔵</div></div>
   <div class="how">
    <div class="how-row"><span>👆</span><p><strong>HPバーは離さず振り続けてOK！</strong></p></div>
-   <div class="how-row"><span>💥</span><p><strong>敵は四方から中央へ接近</strong>。包囲される前に倒そう</p></div>
+   <div class="how-row"><span>💥</span><p><strong>敵はだんだん近くから出現</strong>。四方からの突入を薙ぎ払おう</p></div>
    <div class="how-row"><span>🤖</span><p><strong>HP30からスタート。緑の+15で100を超えても増える</strong></p></div>
   </div>
   <button class="main-button" id="start">ゲームスタート →</button>
-  <p class="sub">敵がどんどん増える無限ラッシュ ｜ スマホ縦画面</p>
+  <p class="sub">90秒防衛＋残敵掃討 ｜ 最終25秒は大量ラッシュ</p>
  </div>
 </section>
 <section class="overlay" id="result" hidden aria-live="polite">
@@ -106,13 +106,14 @@ const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
 const lerp=(a,b,t)=>a+(b-a)*t;
 const TAU=Math.PI*2;
 const rand=(a,b)=>a+Math.random()*(b-a);
-// 経過時間によって段階的に敵の補充速度と同時出現上限を増やす。最終段階以降は無限。
+// 制限時間までの4段階の増援。最後の25秒は至近距離・大量出現の最終ラッシュ。
+const BATTLE_SECONDS=90;
+const CLEANUP_SECONDS=12;
 const WAVES=[
- {name:"群れの予兆",from:0, interval:.72,batch:3,cap:48,speed:.034},
- {name:"敵が押し寄せる",from:18,interval:.62,batch:5,cap:70,speed:.040},
- {name:"止まらない大群",from:40,interval:.51,batch:6,cap:90,speed:.046},
- {name:"包囲の嵐",from:68,interval:.44,batch:7,cap:115,speed:.052},
- {name:"無限ラッシュ",from:100,interval:.38,batch:8,cap:135,speed:.056}
+ {name:"開戦",from:0,interval:.75,batch:3,cap:45,speed:40,spawnMin:132,spawnMax:165},
+ {name:"包囲拡大",from:15,interval:.64,batch:4,cap:70,speed:53,spawnMin:109,spawnMax:140},
+ {name:"猛攻",from:40,interval:.52,batch:6,cap:108,speed:68,spawnMin:87,spawnMax:118},
+ {name:"最終ラッシュ",from:65,interval:.32,batch:11,cap:170,speed:96,spawnMin:56,spawnMax:86}
 ];
 const TYPES={
  runner:{color:"#75c6ff",label:"高速",hp:42,speed:1.15,damage:2},
@@ -124,7 +125,8 @@ const TYPES={
 const START_HP=30;
 const BASE_BAR_HEIGHT=48;
 // 接触型の「攻撃周期」。プレイヤーに無敵時間は付かず、敵ごとの攻撃が独立する。
-const CONTACT_ATTACK_INTERVAL=.36;
+// 敵が独立して攻撃することを維持しつつ、序盤の防衛準備時間を作る。
+const CONTACT_ATTACK_INTERVALS=[.88,.72,.58,.40];
 
 // 28秒ごとに接触・弾の威力が少しずつ上昇する。100秒以降も成長は継続する。
 function damageTier(elapsed){
@@ -149,46 +151,57 @@ function barWidth(){
  // 30HPから増やした分をそのまま実体の長さへ反映する。画面より長くなっても攻撃判定は保持。
  return 101+Math.max(0,g?.hp??START_HP)*Math.min(232,W*.58)/100;
 }
-function ringRadii(){return {x:W*.425,y:Math.min(H*.25,Math.max(93,H*.545-homeY()-75))};}
 function living(){return g.enemies.filter(e=>e.hp>0);}
 function remaining(){return g.enemies.length;}
 
-// 四方八方の外周から不規則な間隔で生み出す。生存敵数はあらかじめ決めない。
+// 出現距離をpxで扱い、楕円上への位置固定を撤廃する。
 function createEnemy(angle){
  const id=g.nextEnemyId++;
  const choice=Math.random();
  const kind=choice<.64?"runner":choice<.83?"gunner":choice<.94?"guard":"medic";
- const config=TYPES[kind],maxHp=config.hp+g.wave*5;
- const enemy={id,kind,angle,radius:1.19+rand(0,.22),
+ const cfg=TYPES[kind],maxHp=cfg.hp+g.wave*5,phase=WAVES[g.wave];
+ const radius=rand(phase.spawnMin,phase.spawnMax);
+ const stopRadius=g.wave===WAVES.length-1?Math.min(radius-4,20+((id*7)%8)*10):0;
+ const e={
+  id,kind,angle,radius,stopRadius,
   hp:maxHp,maxHp,phase:rand(0,TAU),invuln:0,flash:0,
-  nextAction:rand(2.2,4.4),contactCooldown:0,x:0,y:0};
- positionEnemy(enemy);
- return enemy;
+  // 至近距離スポーンでも、最初の0.18秒は出現演出を表示してから接触判定する。
+  entryDelay:.18,nextAction:rand(2.2,4.4),contactCooldown:0,x:0,y:0
+ };
+ positionEnemy(e);
+ return e;
 }
 
-// 同じ方向に群れが固まる瞬間と、全周から押し寄せる瞬間を交互に作る。
+// 集団で一方向に突入する回と全方向から押し寄せる回を交互に発生させる。
 function spawnBatch(){
- const stage=WAVES[g.wave];
- if(remaining()>=stage.cap)return;
+ if(g.spawnClosed)return;
+ const phase=WAVES[g.wave];
+ if(remaining()>=phase.cap)return;
  const cluster=rand(0,TAU),isCluster=g.spawnBatchIndex%3!==0;
- for(let i=0;i<stage.batch&&remaining()<stage.cap;i++){
-  const angle=isCluster?cluster+rand(-.60,.60):rand(0,TAU);
-  g.enemies.push(createEnemy(angle));
+ for(let i=0;i<phase.batch&&remaining()<phase.cap;i++){
+  const angle=isCluster?cluster+rand(-.57,.57):rand(0,TAU);
+  const enemy=createEnemy(angle);
+  g.enemies.push(enemy);
   g.spawned++;
+  if(g.wave===WAVES.length-1){
+   g.rushSpawned++;
+   if(g.nearSpawnDistances.length<40)g.nearSpawnDistances.push(enemy.radius);
+  }
  }
  g.spawnBatchIndex++;
+ if(g.wave===WAVES.length-1)g.maxRushEnemies=Math.max(g.maxRushEnemies,remaining());
  g.peakAlive=Math.max(g.peakAlive,remaining());
 }
 
-// 敵は中央の主人公に向かって前進し、画面外へ飛び出さない。
+// 位置計算も真円の距離と角度を使用し、楕円形の見えない移動レーンをなくす。
 function positionEnemy(e){
- const c=center(),r=ringRadii(),sway=Math.sin((g?.elapsed||0)*1.1+e.phase)*.014;
- const ring=e.radius+sway;
- e.x=clamp(c.x+Math.cos(e.angle)*r.x*ring,10,W-10);
- e.y=clamp(c.y+Math.sin(e.angle)*r.y*ring,homeY()+58,H-22);
+ const c=center(),sway=Math.sin((g?.elapsed||0)*1.1+e.phase)*1.7;
+ const distance=Math.max(0,e.radius+sway);
+ e.x=clamp(c.x+Math.cos(e.angle)*distance,12,W-12);
+ e.y=clamp(c.y+Math.sin(e.angle)*distance,homeY()+64,H-22);
 }
 
-// 端末回転・画面サイズ変更時にUIと敵の包囲円を再配置する。
+// 端末回転・画面サイズ変更時にUIと敵の座標を再配置する。
 function resize(){
  const rect=shell.getBoundingClientRect();
  W=Math.max(1,rect.width);H=Math.max(1,rect.height);
@@ -226,10 +239,13 @@ function toast(text,seconds=1){
 function fresh(){
  const game={wave:0,elapsed:0,hp:START_HP,hero:center(),
   enemies:[],spawned:0,peakAlive:0,nextEnemyId:0,spawnTimer:.18,spawnBatchIndex:0,
+  spawnClosed:false,cleanupRemaining:CLEANUP_SECONDS,rushBanner:0,cleanupBanner:0,
+  rushSpawned:0,nearSpawnDistances:[],maxRushEnemies:0,
   defeated:0,hits:0,blocks:0,healsCollected:0,
   score:0,combo:0,maxCombo:0,lastHit:-99,medicHeals:0,guardBlocks:0,
   intro:3.7,hitFlash:0,lowHpNotified:false,damageTaken:0,hitsTaken:0,contactHits:0,projectileHits:0,
   frameDamage:0,frameHits:0,lastDamageBatch:null,multiHitFrames:0,maxSimultaneousHits:0,
+  pendingDamage:0,pendingHits:0,lastDamageFloatAt:-99,
   bar:{x:W/2,y:homeY(),angle:0,vx:0,vy:0,at:0,grabbed:false,pointerId:null,dx:0,dy:0,
    grabCount:0,releaseCount:0},
   bullets:[],particles:[],floats:[],shake:0,flash:0,pickups:[],pickupTimer:6.5};
@@ -262,15 +278,15 @@ function resume(){
 function finish(won,reason=""){
  if(mode!=="playing")return;
  mode=won?"win":"lose";g.bar.grabbed=false;
- if(won)g.score+=Math.ceil(g.hp)*30;
+ if(won)g.score+=Math.ceil(g.hp)*30+CLEANUP_SECONDS*100;
  if(g.score>best){best=g.score;try{localStorage.setItem("hpbar-surround-best",String(best));}catch{}}
  $("result").hidden=false;$("foot").hidden=true;
- $("result-label").textContent=won?"UNLIMITED SIEGE":"GAME OVER";
- $("result-title").textContent=won?"大群を制圧！":"ゲームオーバー";
+ $("result-label").textContent=won?"RUSH CLEARED":"GAME OVER";
+ $("result-title").textContent=won?"最終ラッシュ突破！":"ゲームオーバー";
  $("score").textContent=g.score.toLocaleString("ja-JP");
  $("result-detail").textContent=won?
-  "撃破 "+g.defeated+"体・生存 "+Math.floor(g.elapsed)+"秒":
-  reason+" ／ "+Math.floor(g.elapsed)+"秒生存・撃破 "+g.defeated+"体";
+  "90秒防衛成功・残敵全滅！ 撃破 "+g.defeated+"体 ／ HP "+Math.ceil(g.hp):
+  reason+" ／ "+Math.min(90,Math.floor(g.elapsed))+"秒防衛・撃破 "+g.defeated+"体";
  $("best").textContent="BEST SCORE： "+best.toLocaleString("ja-JP");
  tone(won?700:230,.26,won?"triangle":"sawtooth",.11,won?950:80);
 }
@@ -391,7 +407,7 @@ function hitEnemy(e,speed,vx,vy){
  if(e.hp===0){
   g.defeated++;g.score+=200;
   // 撃破による自動回復は廃止。回復は落ちているアイテムを狙い取ったときのみ。
-  if(g.defeated%22===0)dropPickup(e.x,e.y);
+  if(g.defeated%10===0)dropPickup(e.x,e.y);
   spray(e.x,e.y,"#ffeec6",12,150);
   tone(540,.085,"triangle",.07,790);
   // 敵が全滅しても戦闘は止まらず、次の増援が流入する。
@@ -399,13 +415,27 @@ function hitEnemy(e,speed,vx,vy){
  return true;
 }
 
-// 一定時間ごとに難度だけ上がる。出現は止めず、HPも勝手に全回復させない。
+// フェーズが進むと出現距離が短くなり、65秒から最後の25秒の大群ラッシュへ。
 function advanceStage(){
- if(g.wave>=WAVES.length-1)return;
- if(g.elapsed<WAVES[g.wave+1].from)return;
+ if(g.spawnClosed)return;
+ const next=WAVES[g.wave+1];
+ if(!next||g.elapsed<next.from)return;
  g.wave++;
- toast("STAGE "+(g.wave+1)+"　"+WAVES[g.wave].name,1.3);
+ g.spawnTimer=Math.min(g.spawnTimer,.08);
+ toast(g.wave===WAVES.length-1?"最終ラッシュ！ 一気に薙ぎ払え！":WAVES[g.wave].name,
+  g.wave===WAVES.length-1?1.9:1.0);
+ if(g.wave===WAVES.length-1){g.rushBanner=2.3;}
  tone(700,.19,"triangle",.085,1120);
+}
+
+// 90秒以降は新規出現を完全停止し、残敵12秒の掃討へ移る。
+function closeSpawns(){
+ if(g.spawnClosed||g.elapsed<BATTLE_SECONDS)return;
+ g.spawnClosed=true;
+ g.cleanupRemaining=CLEANUP_SECONDS;
+ g.cleanupBanner=1.9;
+ toast("増援停止！ 残りの敵を全滅させろ！",1.6);
+ tone(760,.25,"triangle",.10,1010);
 }
 
 // 敵の倒れた位置や中央付近へ緑の回復アイテムを落とし、HPバーで回収させる。
@@ -463,11 +493,12 @@ function updateEnemies(dt){
   e.flash=Math.max(0,e.flash-dt);
   e.contactCooldown=Math.max(0,e.contactCooldown-dt);
   const cfg=TYPES[e.kind],speed=WAVES[g.wave].speed*cfg.speed;
-  e.radius=Math.max(.085,e.radius-dt*speed);
+  e.radius=Math.max(e.stopRadius,e.radius-dt*speed);
   e.angle+=Math.sin(g.elapsed*.5+e.phase)*dt*.045;
+  e.entryDelay=Math.max(0,e.entryDelay-dt);
   positionEnemy(e);
-  if(Math.hypot(e.x-g.hero.x,e.y-g.hero.y)<26&&e.contactCooldown<=0){
-   e.contactCooldown=CONTACT_ATTACK_INTERVAL;
+  if(e.entryDelay<=0&&Math.hypot(e.x-g.hero.x,e.y-g.hero.y)<26&&e.contactCooldown<=0){
+   e.contactCooldown=CONTACT_ATTACK_INTERVALS[g.wave];
    hurt(contactDamage(e.kind,g.elapsed),"contact");
    // 接触型の敵は接触を保って攻撃を続ける。プレイヤーに被弾無敵はない。
    // 攻撃間隔は敵側だけで管理する（重なっている別の敵を待たせない）。
@@ -508,8 +539,14 @@ function flushDamageFeedback(){
  g.shake=Math.min(13,5+g.frameHits*1.6);
  g.flash=Math.min(.35,.09+g.frameHits*.045);
  spray(g.hero.x,g.hero.y,"#ff7d97",Math.min(28,8+g.frameHits*3),125);
- const label="-"+g.frameDamage+(g.frameHits>1?"  ×"+g.frameHits+" HIT":"");
- floatText(g.hero.x,g.hero.y-38,label,"#ff9bad",16);
+ // HPの減少はすべて即時反映し、数字だけ約0.2秒単位で合算して重なり過ぎを防ぐ。
+ g.pendingDamage+=g.frameDamage;
+ g.pendingHits+=g.frameHits;
+ if(g.elapsed-g.lastDamageFloatAt>=.20){
+  const label="-"+g.pendingDamage+(g.pendingHits>1?"  ×"+g.pendingHits+" HIT":"");
+  floatText(g.hero.x,g.hero.y-38,label,"#ff9bad",16);
+  g.pendingDamage=0;g.pendingHits=0;g.lastDamageFloatAt=g.elapsed;
+ }
  tone(190,.095,"sawtooth",.065,92);
  g.frameDamage=0;
  g.frameHits=0;
@@ -541,8 +578,14 @@ function floatText(x,y,text,color,size=15){
 // 時間とともに次々に敵を補充し続ける無限戦闘。固定人数の撃破待ちはない。
 function update(dt){
  if(mode!=="playing"||!g)return;
- g.elapsed+=dt;
+ g.elapsed=Math.min(BATTLE_SECONDS,g.elapsed+dt);
  advanceStage();
+ closeSpawns();
+ if(g.spawnClosed){
+  g.cleanupRemaining=Math.max(0,g.cleanupRemaining-dt);
+ }
+ g.rushBanner=Math.max(0,g.rushBanner-dt);
+ g.cleanupBanner=Math.max(0,g.cleanupBanner-dt);
  g.hitFlash=Math.max(0,g.hitFlash-dt);
  g.frameDamage=0;g.frameHits=0;
  g.shake=Math.max(0,g.shake-dt*38);
@@ -555,11 +598,13 @@ function update(dt){
   g.bar.y=lerp(g.bar.y,homeY(),k);
   g.bar.angle=lerp(g.bar.angle,0,k);
  }else if(performance.now()-g.bar.at>100){g.bar.vx=g.bar.vy=0;}
- g.spawnTimer-=dt;
- if(g.spawnTimer<=0){
-  spawnBatch();
-  g.spawnTimer+=WAVES[g.wave].interval;
-  if(g.spawnTimer<0)g.spawnTimer=0;
+ if(!g.spawnClosed){
+  g.spawnTimer-=dt;
+  if(g.spawnTimer<=0){
+   spawnBatch();
+   g.spawnTimer+=WAVES[g.wave].interval;
+   if(g.spawnTimer<0)g.spawnTimer=0;
+  }
  }
  updateEnemies(dt);
  // 生きている敵だけに絞り、長時間戦闘してもオブジェクトが増え続けないようにする。
@@ -581,8 +626,13 @@ function update(dt){
  }
  flushDamageFeedback();
  if(g.hp<=0){finish(false,"HPが0になった");return;}
+ // 90秒が経過した後に敵全滅でクリア。増援停止前には決してクリアしない。
+ if(g.spawnClosed&&remaining()===0){finish(true);return;}
+ if(g.spawnClosed&&g.cleanupRemaining<=0){
+  finish(false,"残敵を倒しきれなかった");return;
+ }
  if(mode!=="playing")return;
- // 12秒に1回の補給と22体撃破ごとの報酬で、上限なく成長できるが簡単には増え過ぎない。
+ // 12秒ごとの補給と10体撃破報酬。HP上限なしで序盤に備え、終盤の密集に対抗する。
  g.pickupTimer-=dt;
  if(g.pickupTimer<=0){
   if(g.pickups.length<4){
@@ -606,7 +656,8 @@ function update(dt){
   if(p.life<=0)g.floats.splice(i,1);
  }
  $("time").textContent=String(g.defeated);
- $("stage").textContent=(g.wave+1)+"/"+WAVES.length;
+ $("timer-label").textContent=g.spawnClosed?"掃討":"残り";
+ $("stage").textContent=String(Math.ceil(g.spawnClosed?g.cleanupRemaining:BATTLE_SECONDS-g.elapsed));
  $("enemy-count").textContent=String(remaining());
 }
 
@@ -623,20 +674,20 @@ function glow(x,y,r,color){
  ctx.fillStyle=grd;ctx.fillRect(x-r,y-r,r*2,r*2);
 }
 
-// 四方からの包囲が読めるよう中心の防衛圏と外周の危険ゾーンを描画する。
+// 枠や楕円は描かず、中央の人物と近距離の敵に集中できる控えめな背景。
 function drawArena(){
  const bg=ctx.createLinearGradient(0,0,0,H);
  bg.addColorStop(0,"#070e21");bg.addColorStop(.49,"#1b2840");bg.addColorStop(1,"#091326");
  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
- const c=center(),r=ringRadii();
+ const c=center();
  glow(c.x,c.y,180,"#5f89d11f");
- ctx.strokeStyle="#8da8d517";ctx.lineWidth=1;
- for(let x=16;x<W;x+=38){ctx.beginPath();ctx.moveTo(x,homeY()+48);ctx.lineTo(x,H);ctx.stroke();}
- for(let y=homeY()+48;y<H;y+=38){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
- ctx.save();ctx.strokeStyle="#acc6f026";ctx.lineWidth=1.5;
- ctx.beginPath();ctx.ellipse(c.x,c.y,r.x*.94,r.y*.94,0,0,TAU);ctx.stroke();
- ctx.setLineDash([6,8]);ctx.strokeStyle="#ffb5c15a";
- ctx.beginPath();ctx.arc(c.x,c.y,48,0,TAU);ctx.stroke();ctx.restore();
+ ctx.strokeStyle="#8da8d50e";ctx.lineWidth=1;
+ for(let x=16;x<W;x+=38){
+  ctx.beginPath();ctx.moveTo(x,homeY()+48);ctx.lineTo(x,H);ctx.stroke();
+ }
+ for(let y=homeY()+48;y<H;y+=38){
+  ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();
+ }
 }
 
 // 小さい敵30体以上でも識別できるよう色・形・記号を分け、余計なラベルを省く。
@@ -645,6 +696,7 @@ function drawEnemies(){
  for(const e of living()){
   const t=TYPES[e.kind],flash=e.flash>0,ready=e.nextAction<.55;
   ctx.save();ctx.translate(e.x,e.y);
+  if(e.entryDelay>0)glow(0,0,radius*3.2,t.color+"a5");
   if(ready)glow(0,0,radius*2.5,t.color+"7d");
   if(flash)glow(0,0,radius*2.7,"#ffffff83");
   ctx.fillStyle="#07102098";ctx.beginPath();ctx.ellipse(0,radius+5,radius*1.12,4,0,0,TAU);ctx.fill();
@@ -787,8 +839,18 @@ function draw(){
  ctx.restore();
  if(!g)return;
  drawBar();
+ if(g.rushBanner>0||g.cleanupBanner>0){
+  const rush=g.rushBanner>0;
+  ctx.save();
+  ctx.globalAlpha=Math.min(1,(rush?g.rushBanner:g.cleanupBanner)*1.5);
+  ctx.fillStyle="#09132bd9";
+  ctx.fillRect(0,H*.29,W,68);
+  ctx.font="1000 "+Math.min(26,W*.075)+"px system-ui";
+  ctx.textAlign="center";ctx.fillStyle=rush?"#ff879a":"#a7ffca";
+  ctx.fillText(rush?"FINAL RUSH!":"増援停止・残敵掃討",W/2,H*.29+40);
+  ctx.restore();
+ }
 }
-// End of render. Infinite combat has no fixed wave-clear transition.
 
 // 大きなフレーム差を抑えて復帰時の敵の瞬間移動を防ぐ。
 function frame(timestamp){
@@ -809,6 +871,8 @@ window.__hpBarGame={
  snapshot:()=>g?({
   status:mode,stage:g.wave+1,totalStages:WAVES.length,stageName:WAVES[g.wave].name,
   spawned:g.spawned,peakAlive:g.peakAlive,remaining:remaining(),defeated:g.defeated,
+  spawnClosed:g.spawnClosed,cleanupRemaining:g.cleanupRemaining,battleDuration:BATTLE_SECONDS,
+  rushSpawned:g.rushSpawned,maxRushEnemies:g.maxRushEnemies,
   hp:g.hp,maxHp:null,unlimitedHp:true,elapsed:g.elapsed,heroX:g.hero.x,heroY:g.hero.y,
   barX:g.bar.x,barY:g.bar.y,barHomeY:homeY(),barWidth:barWidth(),barHeight:barHeight(),
   grabbed:g.bar.grabbed,grabCount:g.bar.grabCount,releaseCount:g.bar.releaseCount,
@@ -821,7 +885,8 @@ window.__hpBarGame={
   healsCollected:g.healsCollected,pickups:g.pickups.map(p=>({x:p.x,y:p.y,value:p.value,life:p.life})),
   bulletCount:g.bullets.length,viewportWidth:W,viewportHeight:H,
   enemies:g.enemies.map(e=>({id:e.id,kind:e.kind,x:e.x,y:e.y,hp:e.hp,maxHp:e.maxHp,
-    angle:e.angle,radius:e.radius}))
+    angle:e.angle,radius:e.radius,stopRadius:e.stopRadius,entryDelay:e.entryDelay})),
+  nearSpawnDistances:g.nearSpawnDistances
  }):{status:mode}
 };
 })();
