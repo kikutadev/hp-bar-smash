@@ -71,7 +71,7 @@ h1 em{color:#ff718c;font-style:normal}
   <p class="tagline">中央の主人公を36体以上が包囲。<br>HPバーをつかんで全方向に薙ぎ払え！</p>
   <div class="preview" aria-hidden="true"><div class="preview-hp">♥ HP 100 / 100</div><div class="preview-arrow">↓　↓　↓</div><div class="preview-boss" style="font-size:32px;bottom:10px;white-space:nowrap">🔴　🟢<span style="font-size:36px">🧍</span>🟡　🔵</div></div>
   <div class="how">
-   <div class="how-row"><span>👆</span><p><strong>上のHPバーで一振り最大10体を薙ぎ払う！</strong></p></div>
+   <div class="how-row"><span>👆</span><p><strong>上のHPバーをつかんだまま、何度でも薙ぎ払う！</strong></p></div>
    <div class="how-row"><span>💥</span><p><strong>敵は四方から中央へ接近</strong>。包囲される前に倒そう</p></div>
    <div class="how-row"><span>🤖</span><p><strong>緑の回復役・赤い射手を先に狙う</strong>のも戦略</p></div>
   </div>
@@ -197,7 +197,7 @@ function fresh(){
   score:0,combo:0,maxCombo:0,lastHit:-99,medicHeals:0,guardBlocks:0,
   intro:3.7,clearDelay:0,cleared:0,invuln:0,lowHpNotified:false,healHint:false,
   bar:{x:W/2,y:homeY(),angle:0,vx:0,vy:0,at:0,grabbed:false,pointerId:null,dx:0,dy:0,
-   grabCount:0,releaseCount:0,hitIds:new Set()},
+   grabCount:0,releaseCount:0,hitCredits:10},
   bullets:[],particles:[],floats:[],shake:0,flash:0,orb:null,orbTimer:10};
  g=game;game.enemies=createEnemies(0);return game;
 }
@@ -274,7 +274,7 @@ canvas.addEventListener("pointerdown",ev=>{
  if(!onBar(p.x,p.y))return;
  ev.preventDefault();
  const b=g.bar;b.grabbed=true;b.pointerId=ev.pointerId;
- b.dx=b.x-p.x;b.dy=b.y-p.y;b.at=performance.now();b.vx=b.vy=0;b.grabCount++;b.hitIds.clear();
+ b.dx=b.x-p.x;b.dy=b.y-p.y;b.at=performance.now();b.vx=b.vy=0;b.grabCount++;b.hitCredits=10;
  g.intro=0;$("foot").hidden=true;
  canvas.setPointerCapture?.(ev.pointerId);
  tone(490,.05,"triangle",.045,720);
@@ -285,7 +285,10 @@ canvas.addEventListener("pointermove",ev=>{
  if(mode!=="playing"||g.clearDelay>0||!g.bar.grabbed||ev.pointerId!==g.bar.pointerId)return;
  ev.preventDefault();
  const p=cursor(ev),b=g.bar,now=performance.now();
- const dt=clamp((now-b.at)/1000,.009,.09),ox=b.x,oy=b.y;
+ const elapsed=clamp((now-b.at)/1000,0,.5);
+ // 攻撃枠は握っている間も時間で回復し、10回殴った後も指を離す必要がない。
+ b.hitCredits=Math.min(10,b.hitCredits+elapsed*20);
+ const dt=clamp(elapsed,.009,.09),ox=b.x,oy=b.y;
  const nx=clamp(p.x+b.dx,8,W-8),ny=clamp(p.y+b.dy,65,H-18);
  b.vx=clamp((nx-ox)/dt,-2800,2800);b.vy=clamp((ny-oy)/dt,-2800,2800);
  b.x=nx;b.y=ny;b.at=now;b.angle=clamp(b.vx/2900,-.26,.26);
@@ -294,7 +297,7 @@ canvas.addEventListener("pointermove",ev=>{
  const half=barWidth()/2;
  const contacts=[];
  for(const enemy of living()){
-  if(enemy.invuln>0||b.hitIds.has(enemy.id))continue;
+  if(enemy.invuln>0)continue;
   // 実際の棒の軌跡に沿って、最初に触れる時刻を調べる。
   for(let i=0;i<=5;i++){
    const t=i/5,x=lerp(ox,nx,t),y=lerp(oy,ny,t);
@@ -304,10 +307,10 @@ canvas.addEventListener("pointermove",ev=>{
   }
  }
  contacts.sort((a,c)=>a.t-c.t||a.dist-c.dist);
- // 内部の敵ID順ではなく、本当に先に接触した順で最大10体を処理する。
+ // 短時間の一掃には上限があるが、枠が回復するため指を離さず連続攻撃できる。
  for(const {enemy} of contacts){
-  if(b.hitIds.size>=10)break;
-  hitEnemy(enemy,speed,b.vx,b.vy);b.hitIds.add(enemy.id);
+  if(b.hitCredits<1||!g.bar.grabbed||g.clearDelay>0)break;
+  if(hitEnemy(enemy,speed,b.vx,b.vy))b.hitCredits-=1;
  }
  if(g.orb){
   const a=endpoints();
@@ -327,7 +330,7 @@ function enemySize(){return clamp(W*.029,8.5,12);}
 
 // 盾に対する縦攻撃は軽減し、側面からの横振りでは複数体を一掃できる。
 function hitEnemy(e,speed,vx,vy){
- if(e.hp<=0||e.invuln>0||mode!=="playing"||g.clearDelay>0)return;
+ if(e.hp<=0||e.invuln>0||mode!=="playing"||g.clearDelay>0)return false;
  const shield=e.kind==="guard"&&Math.abs(vx)<Math.abs(vy)*.9;
  let damage=Math.round(clamp(37+speed*.035,38,99));
  if(shield){damage=Math.max(12,Math.round(damage*.28));g.guardBlocks++;}
@@ -347,6 +350,7 @@ function hitEnemy(e,speed,vx,vy){
   tone(540,.085,"triangle",.07,790);
   if(remaining()===0)completeWave();
  }
+ return true;
 }
 
 // 敵撃破で次の包囲へ移り、ステージ間のみHPを全回復する。
@@ -639,10 +643,6 @@ function drawBar(){
  ctx.textBaseline="middle";ctx.textAlign="center";
  ctx.fillText("♥ HP "+Math.ceil(g.hp)+" / 100",0,0);
  ctx.restore();
- if(b.grabbed){
-  ctx.textAlign="center";ctx.textBaseline="alphabetic";ctx.font="850 11px system-ui";
-  ctx.fillStyle="#ffddaa";ctx.fillText("連続ヒット  "+b.hitIds.size+" / 10",b.x,b.y+41);
- }
  if(g.intro>0){
   ctx.globalAlpha=clamp(g.intro/.65,0,1);
   ctx.textAlign="center";ctx.fillStyle="#ffe3bd";ctx.font="900 13px system-ui";
@@ -693,7 +693,7 @@ window.__hpBarGame={
   initialEnemies:g.initialCount,remaining:remaining(),defeated:g.defeated,
   hp:g.hp,time:WAVES[g.wave].time-g.elapsed,heroX:g.hero.x,heroY:g.hero.y,
   barX:g.bar.x,barY:g.bar.y,barHomeY:homeY(),barWidth:barWidth(),
-  grabbed:g.bar.grabbed,grabCount:g.bar.grabCount,releaseCount:g.bar.releaseCount,
+  grabbed:g.bar.grabbed,grabCount:g.bar.grabCount,releaseCount:g.bar.releaseCount,hitCredits:g.bar.hitCredits,
   score:g.score,hits:g.hits,blocks:g.blocks,medicHeals:g.medicHeals,guardBlocks:g.guardBlocks,
   clearDelay:g.clearDelay,cleared:g.cleared,bulletCount:g.bullets.length,
   enemies:g.enemies.map(e=>({id:e.id,kind:e.kind,x:e.x,y:e.y,hp:e.hp,maxHp:e.maxHp,
