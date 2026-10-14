@@ -2,16 +2,16 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b1024">
-<meta name="description" content="画面中央の主人公を四方八方から囲む36〜60体の敵を、上部HPバーをつかんで薙ぎ払う縦画面アクション。">
+<meta name="description" content="中央の主人公へ四方八方から迫る敵の大群を、伸びるHPバーで薙ぎ払うアクション。">
 <title>HPバーで殴れ！</title>
 <style>
 :root{font-family:system-ui,-apple-system,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;color-scheme:dark}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050712}
-body{display:grid;place-items:center}
-.shell{width:min(100vw,480px);height:100vh;height:100dvh;position:relative;overflow:hidden;background:#10182b;isolation:isolate;touch-action:none;user-select:none;-webkit-user-select:none;box-shadow:0 0 65px #0009}
+body{display:block}
+.shell{width:100%;height:100vh;height:100dvh;position:relative;overflow:hidden;background:#10182b;isolation:isolate;touch-action:none;user-select:none;-webkit-user-select:none}
 canvas{position:absolute;inset:0;display:block;width:100%;height:100%;touch-action:none}
 .hud{position:absolute;z-index:3;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top,0px) + 12px) 15px 0;pointer-events:none}
 .hud-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -115,14 +115,27 @@ const WAVES=[
  {name:"無限ラッシュ",from:100,interval:.38,batch:8,cap:135,speed:.056}
 ];
 const TYPES={
- runner:{color:"#75c6ff",label:"高速",hp:42,speed:1.15,damage:3},
- gunner:{color:"#ff6b8b",label:"砲撃",hp:48,speed:.67,damage:4},
- medic:{color:"#b993ff",label:"回復",hp:55,speed:.6,damage:3},
+ runner:{color:"#75c6ff",label:"高速",hp:42,speed:1.15,damage:2},
+ gunner:{color:"#ff6b8b",label:"砲撃",hp:48,speed:.67,damage:3},
+ medic:{color:"#b993ff",label:"回復",hp:55,speed:.6,damage:1},
  guard:{color:"#ffd07a",label:"装甲",hp:90,speed:.88,damage:4}
 };
 // HPも棒の長さも無制限。見切れた部分はCanvasだけが自然に切り抜く。
 const START_HP=30;
 const BASE_BAR_HEIGHT=48;
+const CONTACT_REPEAT_SECONDS=.72;
+
+// 28秒ごとに接触・弾の威力が少しずつ上昇する。100秒以降も成長は継続する。
+function damageTier(elapsed){
+ return Math.max(0,Math.floor(elapsed/28));
+}
+function contactDamage(kind,elapsed){
+ const cfg=TYPES[kind];
+ return (cfg?.damage??2)+damageTier(elapsed);
+}
+function projectileDamage(kind,elapsed){
+ return 2+damageTier(elapsed)+(kind==="guard"?2:0);
+}
 let W=390,H=844,dpr=1,last=0,mode="menu",g=null,audio=null,sound=true,toastUntil=0,best=0;
 try{best=Number(localStorage.getItem("hpbar-surround-best"))||0;}catch{}
 
@@ -147,7 +160,7 @@ function createEnemy(angle){
  const config=TYPES[kind],maxHp=config.hp+g.wave*5;
  const enemy={id,kind,angle,radius:1.19+rand(0,.22),
   hp:maxHp,maxHp,phase:rand(0,TAU),invuln:0,flash:0,
-  nextAction:rand(2.2,4.4),x:0,y:0};
+  nextAction:rand(2.2,4.4),contactCooldown:0,x:0,y:0};
  positionEnemy(enemy);
  return enemy;
 }
@@ -177,7 +190,7 @@ function positionEnemy(e){
 // 端末回転・画面サイズ変更時にUIと敵の包囲円を再配置する。
 function resize(){
  const rect=shell.getBoundingClientRect();
- W=Math.max(200,rect.width);H=Math.max(360,rect.height);
+ W=Math.max(1,rect.width);H=Math.max(1,rect.height);
  dpr=Math.min(devicePixelRatio||1,2.5);
  canvas.width=Math.round(W*dpr);canvas.height=Math.round(H*dpr);
  ctx.setTransform(dpr,0,0,dpr,0,0);
@@ -212,9 +225,11 @@ function toast(text,seconds=1){
 function fresh(){
  const game={wave:0,elapsed:0,hp:START_HP,hero:center(),
   enemies:[],spawned:0,peakAlive:0,nextEnemyId:0,spawnTimer:.18,spawnBatchIndex:0,
+  nextRangedShotAt:0,
   defeated:0,hits:0,blocks:0,healsCollected:0,
   score:0,combo:0,maxCombo:0,lastHit:-99,medicHeals:0,guardBlocks:0,
-  intro:3.7,invuln:0,lowHpNotified:false,
+  intro:3.7,hitFlash:0,lowHpNotified:false,damageTaken:0,hitsTaken:0,contactHits:0,projectileHits:0,
+  frameDamage:0,frameHits:0,lastDamageBatch:null,multiHitFrames:0,maxSimultaneousHits:0,
   bar:{x:W/2,y:homeY(),angle:0,vx:0,vy:0,at:0,grabbed:false,pointerId:null,dx:0,dy:0,
    grabCount:0,releaseCount:0},
   bullets:[],particles:[],floats:[],shake:0,flash:0,pickups:[],pickupTimer:6.5};
@@ -376,7 +391,7 @@ function hitEnemy(e,speed,vx,vy){
  if(e.hp===0){
   g.defeated++;g.score+=200;
   // 撃破による自動回復は廃止。回復は落ちているアイテムを狙い取ったときのみ。
-  if(g.defeated%11===0)dropPickup(e.x,e.y);
+  if(g.defeated%22===0)dropPickup(e.x,e.y);
   spray(e.x,e.y,"#ffeec6",12,150);
   tone(540,.085,"triangle",.07,790);
   // 敵が全滅しても戦闘は止まらず、次の増援が流入する。
@@ -430,44 +445,80 @@ function act(e){
   e.nextAction=3.3;
   return;
  }
- // 全射手が同時に発射しないよう各敵の独立タイマーを利用する。
+ // 全射手がそれぞれ連射し続けると、初期HP30では何もできないうちに倒される。
+ // そこで射撃だけは敵集団共通の発射間隔を使い、近接攻撃は各個体ごとに独立させる。
+ if(g.elapsed<g.nextRangedShotAt){
+  e.nextAction=rand(.24,.43);
+  return;
+ }
  if(g.bullets.length<65){
   const a=Math.atan2(g.hero.y-e.y,g.hero.x-e.x);
   const v=140+g.wave*10;
   g.bullets.push({x:e.x,y:e.y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,
-   r:5.6,life:3.7});
+   r:5.6,life:3.7,damage:projectileDamage(e.kind,g.elapsed)});
+  g.nextRangedShotAt=g.elapsed+Math.max(.80,2.05-g.wave*.29);
  }
  e.nextAction=e.kind==="gunner"?3.1-g.wave*.1:4.0;
 }
 
-// 四方八方から円周内へ徐々に接近し、主人公へ達した敵を外へ押し戻して被弾を発生させる。
+// 各敵自身が再攻撃までの間隔を管理する。複数体の同時接触を全体無敵時間で潰さない。
 function updateEnemies(dt){
  for(const e of living()){
-  e.invuln=Math.max(0,e.invuln-dt);e.flash=Math.max(0,e.flash-dt);
+  if(mode!=="playing")break;
+  e.invuln=Math.max(0,e.invuln-dt);
+  e.flash=Math.max(0,e.flash-dt);
+  e.contactCooldown=Math.max(0,e.contactCooldown-dt);
   const cfg=TYPES[e.kind],speed=WAVES[g.wave].speed*cfg.speed;
   e.radius=Math.max(.085,e.radius-dt*speed);
   e.angle+=Math.sin(g.elapsed*.5+e.phase)*dt*.045;
   positionEnemy(e);
-  if(Math.hypot(e.x-g.hero.x,e.y-g.hero.y)<26){
-   if(g.invuln<=0)hurt(cfg.damage+g.wave);
-   e.radius=Math.max(e.radius,.58);positionEnemy(e);
+  if(Math.hypot(e.x-g.hero.x,e.y-g.hero.y)<26&&e.contactCooldown<=0){
+   e.contactCooldown=CONTACT_REPEAT_SECONDS;
+   hurt(contactDamage(e.kind,g.elapsed),"contact");
+   // 攻撃した個体だけ少し押し戻す。別の個体の攻撃は止めない。
+   e.radius=Math.max(e.radius,.39);
+   positionEnemy(e);
   }
   e.nextAction-=dt;
   if(e.nextAction<=0)act(e);
  }
 }
 
-// 被弾によるHP減少はHPバーの長さにも連動し、攻撃できる面積が小さくなる。
-function hurt(damage){
- if(g.invuln>0||mode!=="playing")return;
- g.hp=Math.max(0,g.hp-damage);g.invuln=.98;g.combo=0;g.shake=8;g.flash=.21;
- spray(g.hero.x,g.hero.y,"#ff7d97",13,125);
- floatText(g.hero.x,g.hero.y-35,"-"+damage,"#ff829d",17);
- tone(160,.16,"sawtooth",.1,75);
+// 被弾のたびHPを減らし、描画だけをフレーム内で合算する。
+// これにより同時被弾でHPがきちんと複数回減り、数字も「-合計 ×N HIT」と読める。
+function hurt(amount,source){
+ if(mode!=="playing")return;
+ const damage=Math.max(1,Math.round(amount));
+ g.hp=Math.max(0,g.hp-damage);
+ g.hitsTaken++;
+ g.damageTaken+=damage;
+ g.frameDamage+=damage;
+ g.frameHits++;
+ if(source==="contact")g.contactHits++;
+ else if(source==="projectile")g.projectileHits++;
+ g.combo=0;
+ g.hitFlash=.19;
  if(g.hp<=15&&!g.lowHpNotified){
-  g.lowHpNotified=true;toast("HPバーが短くなった！",.9);
+  g.lowHpNotified=true;
+  toast("HPが残りわずか！",.85);
  }
  if(g.hp<=0)finish(false,"HPが0になった");
+}
+
+// 個別の被弾はすべて計上したあと、短いフレーム内の数字だけ統合する。
+function flushDamageFeedback(){
+ if(g.frameHits===0)return;
+ g.lastDamageBatch={damage:g.frameDamage,hits:g.frameHits,elapsed:g.elapsed};
+ if(g.frameHits>1)g.multiHitFrames++;
+ g.maxSimultaneousHits=Math.max(g.maxSimultaneousHits,g.frameHits);
+ g.shake=Math.min(13,5+g.frameHits*1.6);
+ g.flash=Math.min(.35,.09+g.frameHits*.045);
+ spray(g.hero.x,g.hero.y,"#ff7d97",Math.min(28,8+g.frameHits*3),125);
+ const label="-"+g.frameDamage+(g.frameHits>1?"  ×"+g.frameHits+" HIT":"");
+ floatText(g.hero.x,g.hero.y-38,label,"#ff9bad",16);
+ tone(190,.095,"sawtooth",.065,92);
+ g.frameDamage=0;
+ g.frameHits=0;
 }
 
 // 回復アイテムをHPバーで回収したときだけHPが増え、棒の長さも伸びる。
@@ -498,7 +549,8 @@ function update(dt){
  if(mode!=="playing"||!g)return;
  g.elapsed+=dt;
  advanceStage();
- g.invuln=Math.max(0,g.invuln-dt);
+ g.hitFlash=Math.max(0,g.hitFlash-dt);
+ g.frameDamage=0;g.frameHits=0;
  g.shake=Math.max(0,g.shake-dt*38);
  g.flash=Math.max(0,g.flash-dt*3);
  g.intro=Math.max(0,g.intro-dt);
@@ -530,17 +582,19 @@ function update(dt){
    g.bullets.splice(i,1);continue;
   }
   if(Math.hypot(b.x-g.hero.x,b.y-g.hero.y)<21){
-   g.bullets.splice(i,1);hurt(3+Math.floor(g.wave/2));
+   g.bullets.splice(i,1);hurt(b.damage,"projectile");
   }
  }
- // 時間経過でもアイテムを支給するが、HPは自動回復しない。
+ flushDamageFeedback();
+ if(mode!=="playing")return;
+ // 12秒に1回の補給と22体撃破ごとの報酬で、上限なく成長できるが簡単には増え過ぎない。
  g.pickupTimer-=dt;
  if(g.pickupTimer<=0){
   if(g.pickups.length<4){
    const c=center(),a=rand(0,TAU),distance=rand(45,100);
    dropPickup(c.x+Math.cos(a)*distance,c.y+Math.sin(a)*distance);
   }
-  g.pickupTimer=8.0;
+  g.pickupTimer=12.0;
  }
  for(let i=g.pickups.length-1;i>=0;i--){
   g.pickups[i].life-=dt;
@@ -640,13 +694,13 @@ function drawEnemies(){
 // 主人公を常に画面の中央で際立たせ、防衛圏へ侵入した敵の接触判定を見せる。
 function drawHero(){
  const c=g.hero,r=22;
- glow(c.x,c.y,55,g.invuln>0?"#ff7b8a66":"#73b5fd50");
+ glow(c.x,c.y,55,g.hitFlash>0?"#ff7b8a66":"#73b5fd50");
  ctx.save();ctx.translate(c.x,c.y);
  const hop=Math.sin(g.elapsed*7)*1.5;
  ctx.fillStyle="#061224ae";ctx.beginPath();ctx.ellipse(0,r+10,26,7,0,0,TAU);ctx.fill();
  roundRect(-13,r*.15+hop,11,17,5,"#406b90","#c1e7f7",1.8);
  roundRect(2,r*.15+hop,11,17,5,"#406b90","#c1e7f7",1.8);
- roundRect(-r,-r+hop,2*r,2*r,14,g.invuln>0&&Math.sin(g.elapsed*24)>0?"#ffa1b1":"#52b9dc","#d5f3ff",3);
+ roundRect(-r,-r+hop,2*r,2*r,14,g.hitFlash>0&&Math.sin(g.elapsed*24)>0?"#ffa1b1":"#52b9dc","#d5f3ff",3);
  ctx.fillStyle="#f9ffff";ctx.beginPath();ctx.arc(-8,-5,5,0,TAU);ctx.arc(8,-5,5,0,TAU);ctx.fill();
  ctx.fillStyle="#122844";ctx.beginPath();ctx.arc(-7,-4,2,0,TAU);ctx.arc(9,-4,2,0,TAU);ctx.fill();
  ctx.strokeStyle="#153550";ctx.lineWidth=2.5;
@@ -752,6 +806,11 @@ requestAnimationFrame(frame);
 
 // 自動QAで実際の表示と戦闘を確認する読み取り専用の状態を提供する。
 window.__hpBarGame={
+ // QA用の読み取り専用プレビュー。実ゲームと同じ純粋関数で将来の被ダメージを表示する。
+ damagePreview:(elapsed)=>({tier:damageTier(elapsed),
+   contact:Object.fromEntries(Object.keys(TYPES).map(kind=>[kind,contactDamage(kind,elapsed)])),
+   projectile:{gunner:projectileDamage("gunner",elapsed),guard:projectileDamage("guard",elapsed)}
+ }),
  snapshot:()=>g?({
   status:mode,stage:g.wave+1,totalStages:WAVES.length,stageName:WAVES[g.wave].name,
   spawned:g.spawned,peakAlive:g.peakAlive,remaining:remaining(),defeated:g.defeated,
@@ -759,8 +818,13 @@ window.__hpBarGame={
   barX:g.bar.x,barY:g.bar.y,barHomeY:homeY(),barWidth:barWidth(),barHeight:barHeight(),
   grabbed:g.bar.grabbed,grabCount:g.bar.grabCount,releaseCount:g.bar.releaseCount,
   score:g.score,hits:g.hits,blocks:g.blocks,medicHeals:g.medicHeals,guardBlocks:g.guardBlocks,
+  damageTaken:g.damageTaken,hitsTaken:g.hitsTaken,contactHits:g.contactHits,projectileHits:g.projectileHits,
+  lastDamageBatch:g.lastDamageBatch,multiHitFrames:g.multiHitFrames,
+  maxSimultaneousHits:g.maxSimultaneousHits,damageTier:damageTier(g.elapsed),
+  contactDamageByKind:{runner:contactDamage("runner",g.elapsed),gunner:contactDamage("gunner",g.elapsed),medic:contactDamage("medic",g.elapsed),guard:contactDamage("guard",g.elapsed)},
+  projectileDamageByKind:{gunner:projectileDamage("gunner",g.elapsed),guard:projectileDamage("guard",g.elapsed)},
   healsCollected:g.healsCollected,pickups:g.pickups.map(p=>({x:p.x,y:p.y,value:p.value,life:p.life})),
-  bulletCount:g.bullets.length,
+  bulletCount:g.bullets.length,viewportWidth:W,viewportHeight:H,
   enemies:g.enemies.map(e=>({id:e.id,kind:e.kind,x:e.x,y:e.y,hp:e.hp,maxHp:e.maxHp,
     angle:e.angle,radius:e.radius}))
  }):{status:mode}
