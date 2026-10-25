@@ -113,7 +113,7 @@ for(const {m,r} of rocks)for(let i=0;i<110;i++){
 }
 // Trunk and stylized canopy: geometry is environmental, not part of navigation.
 for(let i=0;i<17;i++){
-  const x=R(-8,10.5),z=(rand()<.5?-1:1)*R(3.1,7);
+  const x=R(-8,10.5),z=-R(3.1,7);
   const h=R(1.1,2.1);
   const t=new THREE.Mesh(new THREE.CylinderGeometry(.1,.16,h,7),trunk);
   t.position.set(x,h/2,z);t.castShadow=true;scene.add(t);
@@ -272,7 +272,7 @@ const states={IDLE:0,REACH:1,GRIP:2,RELEASE:3};
 let body=V(-5.52,.43,.0),vel=V(),stageIndex=0,autoplay=true,autoTarget=0,elapsed=0,drinkHeld=false,latchRequested=false,latchTime=0;
 const keys=new Set(),stick=V(),desired=V(1,0,0),tentacles=[],worldUp=V(0,1,0);
 let angle=2.30,pitch=.27,started=false,messageTimeout=0,shake=0,supported=0,lastSurface='GROUND';
-for(let i=0;i<MAX;i++)tentacles.push({state:states.IDLE,time:0,target:null,points:Array.from({length:STEPS},()=>body.clone()),prev:Array.from({length:STEPS},()=>body.clone()),length:1.1,base:V(),drop:-1});
+for(let i=0;i<MAX;i++)tentacles.push({state:states.IDLE,time:0,target:null,points:Array.from({length:STEPS},()=>body.clone()),prev:Array.from({length:STEPS},()=>body.clone()),length:1.1,base:V(),drop:-1,long:false});
 const autoPath=[
   V(-4.2,.49,-.3),V(-1.55,.7,0),V(.9,1.0,.15),V(1.84,1.05,.03),
   V(1.83,2.4,0),V(1.90,3.45,0),V(3.55,3.77,.05),
@@ -369,14 +369,14 @@ function equalBezier(a,b){
  return out;
 }
 function startReach(t,index,anchor){
- t.state=states.REACH;t.time=0;t.target=anchor;t.length=1.1+stageIndex*.05;
+ t.state=states.REACH;t.time=0;t.target=anchor;t.long=false;t.length=1.1+stageIndex*.05;
  const root=tipRoot(index),curve=equalBezier(root,anchor.p);
  for(let j=0;j<STEPS;j++){t.points[j].copy(root);t.prev[j].copy(root);}
  t.curve=curve;
 }
 function release(t){
  if(t.state===states.IDLE||t.state===states.RELEASE)return;
- t.state=states.RELEASE;t.time=0;t.target=null;
+ t.state=states.RELEASE;t.time=0;t.target=null;t.long=false;
 }
 function sampleCatmull(points,percent){
  const x=percent*(points.length-1),i=Math.min(points.length-2,Math.floor(x)),t=x-i;
@@ -422,7 +422,11 @@ function updateTentacles(dt){
    }else if(t.state===states.GRIP){
      const span=body.distanceTo(t.target.p);
      const back=t.target.p.clone().sub(body).dot(desired)<-.25;
-     if(span>t.length*.92||(back&&count>target&&rand()<dt*.6))release(t);
+     if(t.long){
+       t.length=Math.max(.64,t.length-dt*1.08);
+       if(t.length<.73&&span<.78){t.long=false;release(t);vel.y+=.72;}
+       else simulateRope(t,i,dt);
+     }else if(span>t.length*.92||(back&&count>target&&rand()<dt*.6))release(t);
      else simulateRope(t,i,dt);
    }else if(t.state===states.RELEASE){
      const shrink=clamp(t.time/.34,0,1);
@@ -468,6 +472,12 @@ function updateWater(dt){
    if(p.used)continue;
    if(p.drinking){
      p.drinkTime+=dt;
+     if(p.barrel){
+       const dive=clamp(p.drinkTime/2.75,0,1);
+       const oilHeight=1.43-.27*Math.sin(dive*Math.PI);
+       body.lerp(V(p.pos.x,oilHeight,p.pos.z),clamp(dt*3.3,0,1));
+       vel.multiplyScalar(Math.exp(-dt*7));
+     }
      p.fill=clamp(1-p.drinkTime/2.75,0,1);
      p.mesh.scale.setScalar(p.radius*Math.max(.01,p.fill));
      p.uniforms.uFill.value=p.fill;
@@ -477,6 +487,7 @@ function updateWater(dt){
      }
      if(p.drinkTime>=2.75){
        p.used=true;p.drinking=false;
+       if(p.barrel){body.y+=.14;vel.y+=2.65;autoTarget=Math.max(autoTarget,10);}
        stageIndex=Math.min(4,stageIndex+1);shake=.3;
        message('EVOLUTION · '+stages[stageIndex]+' TENTACLES');
        for(let i=stages[stageIndex-1];i<stages[stageIndex];i++){
@@ -591,7 +602,7 @@ function updateHUD(){
 function reset(){
  body.set(-5.52,.43,0);vel.set(0,0,0);supported=1;stageIndex=0;autoTarget=0;autoplay=true;latchTime=0;elapsed=0;
  for(const p of pools){p.fill=1;p.drinking=false;p.drinkTime=0;p.used=false;p.mesh.scale.setScalar(p.radius);p.uniforms.uFill.value=1;}
- for(const t of tentacles){t.state=states.IDLE;t.target=null;t.time=0;t.drop=-1;}
+ for(const t of tentacles){t.state=states.IDLE;t.target=null;t.time=0;t.drop=-1;t.long=false;}
  for(let i=0;i<8;i++){const a=chooseAnchor(i,null);if(a){startReach(tentacles[i],i,a);tentacles[i].state=states.GRIP;for(let j=0;j<STEPS;j++){tentacles[i].points[j].copy(tentacles[i].curve[j]);tentacles[i].prev[j].copy(tentacles[i].curve[j]);}}}
 }
 reset();
