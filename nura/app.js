@@ -8,7 +8,7 @@ scene.fog=new THREE.Fog('#a1c6c7',19,46);
 const camera=new THREE.PerspectiveCamera(46,innerWidth/innerHeight,.06,110);
 const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:'high-performance'});
 renderer.setSize(innerWidth,innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio,innerWidth<700?1.1:1.6));
+renderer.setPixelRatio(Math.min(devicePixelRatio,innerWidth<700?1:1.35));
 renderer.outputColorSpace=THREE.SRGBColorSpace;
 renderer.toneMapping=THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure=1.18;
@@ -308,6 +308,7 @@ function visibleAnchor(a){
  return !hits.length||hits[0].distance>len-.11;
 }
 function gripCount(){let n=0;for(let i=0;i<stages[stageIndex];i++)if(tentacles[i].state===states.GRIP)n++;return n;}
+function committedCount(){let n=0;for(let i=0;i<stages[stageIndex];i++)if(tentacles[i].state===states.GRIP||tentacles[i].state===states.REACH)n++;return n;}
 function gripTarget(){return gripTargets[stageIndex];}
 function nearestPool(){
  let result=null,min=1.52;
@@ -321,9 +322,9 @@ function nearPoolGrips(p){
  return tentacles.filter(t=>t.state===states.GRIP&&t.target&&t.target.p.distanceTo(p.pos)<p.radius+(.2)).length;
 }
 function chooseAnchor(index,pool){
- const root=tipRoot(index),radius=1.15+stageIndex*.045;
- const ideal=mix(.72,.46,stageIndex/4);
- const candidates=queryAnchors(body,radius).filter(a=>a.p.distanceTo(root)>.16);
+ const root=tipRoot(index),radius=1.72+stageIndex*.085;
+ const ideal=mix(1.08,.78,stageIndex/4);
+ const candidates=queryAnchors(body,radius).filter(a=>a.p.distanceTo(root)>.26);
  const occupied=tentacles.filter(t=>t.state===states.GRIP&&t.target).map(t=>t.target.p);
  let ranked=[];
  for(const a of candidates){
@@ -338,7 +339,8 @@ function chooseAnchor(index,pool){
    const theta=index*2.39996;
    const radial=V(Math.cos(theta),0,Math.sin(theta));
    const spread=direction.clone().setY(0).normalize().dot(radial);
-   let score=(1-dist/.9)*2.3+move*.65+nScore*1.9+Math.min(sep,.8)*1.65+spread*.96+R(-.23,.23);
+   let score=(1-dist/.9)*2.4+move*.8+nScore*1.3+Math.min(sep,1.05)*2.2+spread*2.5+R(-.11,.11);
+   if(sep<.36)score-=4.5;
    if(pool&&!pool.used&&a.p.distanceTo(pool.pos)<pool.radius)score+=1.6;
    ranked.push({a,score});
  }
@@ -350,9 +352,9 @@ function bezier(a,b,t){
  const delta=b.clone().sub(a);
  const outward=delta.clone().setY(0);
  if(outward.lengthSq()<.0001)outward.set(1,0,0);else outward.normalize();
- const arch=.4+stageIndex*.085;
- const c1=a.clone().addScaledVector(outward,arch).add(V(0,.29,0));
- const c2=b.clone().addScaledVector(outward,arch*.76).add(V(0,.33,0));
+ const arch=.57+stageIndex*.07;
+ const c1=a.clone().addScaledVector(outward,arch).add(V(0,.28,0));
+ const c2=b.clone().addScaledVector(outward,arch*.30).add(V(0,.45,0));
  const q=1-t;
  return a.clone().multiplyScalar(q*q*q).addScaledVector(c1,3*q*q*t).addScaledVector(c2,3*q*t*t).addScaledVector(b,t*t*t);
 }
@@ -369,7 +371,7 @@ function equalBezier(a,b){
  return out;
 }
 function startReach(t,index,anchor){
- t.state=states.REACH;t.time=0;t.target=anchor;t.long=false;t.length=1.1+stageIndex*.05;
+ t.state=states.REACH;t.time=0;t.target=anchor;t.long=false;t.length=1.76+stageIndex*.095;
  const root=tipRoot(index),curve=equalBezier(root,anchor.p);
  for(let j=0;j<STEPS;j++){t.points[j].copy(root);t.prev[j].copy(root);}
  t.curve=curve;
@@ -406,13 +408,18 @@ function simulateRope(t,index,dt){
 }
 function updateTentacles(dt){
  const pool=nearestPool(),active=stages[stageIndex],count=gripCount(),target=gripTarget();
+ if(count>target+2){
+   const excess=tentacles.slice(0,active).filter(t=>t.state===states.GRIP&&!t.long)
+      .sort((a,b)=>a.target.p.clone().sub(body).dot(desired)-b.target.p.clone().sub(body).dot(desired));
+   for(let k=0;k<Math.min(count-target,excess.length);k++)release(excess[k]);
+ }
  // Score every frame. Existing ropes are only released after physical constraints.
  for(let i=0;i<active;i++){
    const t=tentacles[i],root=tipRoot(i);t.time+=dt;
    if(t.state===states.IDLE){
-     if(gripCount()<target+2){const a=chooseAnchor(i,pool);if(a)startReach(t,i,a);}
+     if(committedCount()<target+2){const a=chooseAnchor(i,pool);if(a)startReach(t,i,a);}
    }else if(t.state===states.REACH){
-     const progress=clamp(t.time/(.23+stageIndex*.02),0,1);
+     const progress=clamp(t.time/(.13+stageIndex*.008),0,1);
      const endIdx=progress*(STEPS-1);
      for(let j=0;j<STEPS;j++){
        const at=Math.min(endIdx,j),low=Math.floor(at),high=Math.min(STEPS-1,low+1);
@@ -421,15 +428,15 @@ function updateTentacles(dt){
      if(progress===1){t.state=states.GRIP;t.time=0;for(let j=0;j<STEPS;j++)t.prev[j].copy(t.points[j]);}
    }else if(t.state===states.GRIP){
      const span=body.distanceTo(t.target.p);
-     const back=t.target.p.clone().sub(body).dot(desired)<-.25;
+     const back=t.target.p.clone().sub(body).dot(desired)<-.20;
      if(t.long){
        t.length=Math.max(.64,t.length-dt*1.08);
        if(t.length<.73&&span<.78){t.long=false;release(t);vel.y+=.72;}
        else simulateRope(t,i,dt);
-     }else if(span>t.length*.92||(back&&count>target&&rand()<dt*.6))release(t);
+     }else if(span>t.length*.92||(back&&count>=target&&t.time>.12&&rand()<dt*6))release(t);
      else simulateRope(t,i,dt);
    }else if(t.state===states.RELEASE){
-     const shrink=clamp(t.time/.34,0,1);
+     const shrink=clamp(t.time/.20,0,1);
      for(let j=0;j<STEPS;j++)t.points[j].lerp(root,.13+shrink*.25);
      if(shrink===1){t.state=states.IDLE;t.time=0;}
    }
@@ -443,7 +450,7 @@ function writeRopeTexture(){
    if(i>=active||t.state===states.IDLE){mesh.visible=false;continue;}
    const points=t.points,ball=V(),samples=[];
    for(let j=0;j<SAMPLES;j++)samples.push(sampleCatmull(points,j/(SAMPLES-1)));
-   const fade=t.state===states.RELEASE?1-clamp(t.time/.34,0,1):1;
+   const fade=t.state===states.RELEASE?1-clamp(t.time/.20,0,1):1;
    const radius=(.069-stageIndex*.0065)*fade;
    for(let j=0;j<SAMPLES;j++){
      const p=samples[j],k=(i*SAMPLES+j)*4;
@@ -510,7 +517,7 @@ function launch(){
  const highest=queryAnchors(body,2.3).filter(a=>a.p.y>body.y+.36).sort((a,b)=>b.p.y-a.p.y)[0];
  let slot=tentacles.slice(0,stages[stageIndex]).findIndex(t=>t.state===states.IDLE||t.state===states.RELEASE);
  if(slot<0)slot=0;
- if(highest&&visibleAnchor(highest)){startReach(tentacles[slot],slot,highest);tentacles[slot].length=2.35;vel.y+=.9;message('LONG REACH · LATCH');}
+ if(highest&&visibleAnchor(highest)){startReach(tentacles[slot],slot,highest);tentacles[slot].length=2.45;tentacles[slot].long=true;vel.y+=.9;message('LONG REACH · LATCH');}
  else {vel.y+=2.2;message('LEAP');}
 }
 function worldMovement(dt){
@@ -523,7 +530,10 @@ function worldMovement(dt){
    const waypoint=autoPath[Math.min(autoTarget,autoPath.length-1)];
    desired.copy(waypoint).sub(body);if(desired.length()<.95&&autoTarget<autoPath.length-1)autoTarget++;
    desired.normalize();
- }else desired.set(inputX,0,inputZ).normalize();
+ }else{
+   const rotation=angle-2.30;
+   desired.set(inputX*Math.cos(rotation)-inputZ*Math.sin(rotation),0,inputX*Math.sin(rotation)+inputZ*Math.cos(rotation)).normalize();
+ }
  if(autoplay&&autoTarget>=autoPath.length-1&&body.distanceTo(autoPath.at(-1))<.7){autoTarget=0;autoplay=false;message('EXPLORATION COMPLETE');}
  const surface=info?.s;
  if(surface){
@@ -534,18 +544,18 @@ function worldMovement(dt){
    if(surface.name==='WALL'&&desired.x>.05){along.addScaledVector(worldUp,Math.max(.5,desired.x*1.65));if(body.y>2.86)along.x+=1.35;}
    if(surface.name==='CEILING'&&desired.y>.25)along.add(V(.4,0,0));
    if(along.length()>.01)along.normalize();
-   const speed=(1.48+stageIndex*.26)*(autoplay?.72:1);
-   vel.lerp(along.multiplyScalar(speed),clamp(dt*(supported>.2?4.2:1.6),0,1));
+   const speed=(2.95+stageIndex*.32)*(autoplay?.80:1);
+   vel.lerp(along.multiplyScalar(speed),1-Math.exp(-dt*(supported>.2?16:9)));
    const offset=mix(.40,.91,stageIndex/4);
    const error=offset-info.along;
    vel.addScaledVector(normal,clamp(error*7.2*dt,-.18,.18)*(supported*.8+.13));
-   if(!autoplay&&desired.length()<.01)vel.multiplyScalar(Math.exp(-dt*3.7));
+   if(!autoplay&&desired.length()<.01)vel.multiplyScalar(Math.exp(-dt*17));
  }else{
    lastSurface='AIR';
-   vel.x+=desired.x*dt*.5;vel.z+=desired.z*dt*.5;
+   vel.x+=desired.x*dt*6;vel.z+=desired.z*dt*6;
  }
  vel.y-=9.5*(1-supported)*dt;
- const terminal=4.2;vel.y=Math.max(-terminal,vel.y);
+ const terminal=6.2;vel.y=Math.max(-terminal,vel.y);
  body.addScaledVector(vel,dt);
  // Grip ropes constrain maximum distance, without forcing a fixed length or inverting the state flow.
  for(let k=0;k<3;k++)for(let i=0;i<stages[stageIndex];i++){
@@ -553,7 +563,8 @@ function worldMovement(dt){
    const displacement=body.clone().sub(t.target.p),dist=displacement.length();
    if(dist>t.length){
      body.addScaledVector(displacement,(t.length-dist)/dist*.35);
-     vel.addScaledVector(displacement.clone().normalize(),Math.min(0,-vel.dot(displacement.normalize()))*.08);
+     const radial=displacement.normalize();
+     const outward=vel.dot(radial);if(outward>0)vel.addScaledVector(radial,-outward*.75);
    }
  }
  // Solid geometry stops penetration; the motor projects forward push onto the wall tangent.
@@ -618,48 +629,63 @@ function frame(time){
  }
  updateVisual();
  for(const p of pools)p.uniforms.uTime.value=elapsed;
- const distance=innerWidth<700?6.9:6.5;
+ const distance=innerWidth<700?5.7:6.0;
  const offset=V(Math.cos(angle)*distance,2.15+Math.sin(pitch)*distance*.32,Math.sin(angle)*distance);
  const desiredCam=body.clone().add(offset);
  if(shake>0){desiredCam.x+=R(-shake,shake)*.3;desiredCam.y+=R(-shake,shake)*.3;shake-=dt;}
- camera.position.lerp(desiredCam,1-Math.exp(-dt*2.5));
+ camera.position.lerp(desiredCam,1-Math.exp(-dt*12));
  camera.lookAt(body.clone().add(V(0,.29,0)));
  if((hudClock+=dt)>.13){updateHUD();hudClock=0;}
  renderer.render(scene,camera);
 }
-function resize(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,innerWidth<700?1.1:1.6));}
+function resize(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,innerWidth<700?1:1.35));}
 window.addEventListener('resize',resize);
+function beginPlay(){
+ if(!started){started=true;$('intro').classList.add('hidden');}
+}
 window.addEventListener('keydown',e=>{
+ const codes=['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','KeyE','KeyR'];
+ if(!codes.includes(e.code)||e.ctrlKey||e.metaKey||e.altKey)return;
  if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();
- keys.add(e.code);
+ beginPlay();keys.add(e.code);
  if(e.code==='Space'&&!e.repeat)launch();
  if(e.code==='KeyE'&&!e.repeat)tryDrink();
  if(e.code==='KeyR'&&!e.repeat)reset();
 });
 window.addEventListener('keyup',e=>{keys.delete(e.code);if(e.code==='KeyE')drinkHeld=false;});
-window.addEventListener('blur',()=>{keys.clear();stick.set(0,0,0);drinkHeld=false;});
-$('start').addEventListener('click',()=>{started=true;autoplay=true;$('intro').classList.add('hidden');message('FIND A GRIP · MOVE / CLIMB / ABSORB');});
-$('auto').addEventListener('click',()=>{started=true;autoplay=!autoplay;$('intro').classList.add('hidden');});
-$('drink').addEventListener('click',()=>{started=true;tryDrink();setTimeout(()=>drinkHeld=false,1100);});
-$('latch').addEventListener('click',()=>{started=true;launch();});
+function cancelInput(){
+ keys.clear();stick.set(0,0,0);drinkHeld=false;
+ draggingPointer=null;stickPointer=null;
+ $('knob').style.transform='translate(0,0)';
+}
+window.addEventListener('blur',cancelInput);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelInput();});
+$('start').addEventListener('click',()=>{beginPlay();autoplay=true;message('FIND A GRIP · MOVE / CLIMB / ABSORB');});
+$('auto').addEventListener('click',()=>{beginPlay();autoplay=!autoplay;});
+$('drink').addEventListener('click',()=>{beginPlay();tryDrink();setTimeout(()=>drinkHeld=false,1100);});
+$('latch').addEventListener('click',()=>{beginPlay();launch();});
 $('reset').addEventListener('click',()=>{started=true;reset();});
-$('mobileDrink').addEventListener('click',()=>{started=true;tryDrink();setTimeout(()=>drinkHeld=false,1200);});
-$('mobileLatch').addEventListener('click',()=>{started=true;launch();});
-let dragging=false,prevX=0,prevY=0;
-canvas.addEventListener('pointerdown',e=>{dragging=true;prevX=e.clientX;prevY=e.clientY;canvas.setPointerCapture(e.pointerId);});
-canvas.addEventListener('pointermove',e=>{if(!dragging)return;angle-=(e.clientX-prevX)*.004;pitch=clamp(pitch+(e.clientY-prevY)*.004,-.35,.78);prevX=e.clientX;prevY=e.clientY;});
-const endDrag=()=>dragging=false;
-canvas.addEventListener('pointerup',endDrag);canvas.addEventListener('pointercancel',endDrag);
+$('mobileDrink').addEventListener('click',()=>{beginPlay();tryDrink();setTimeout(()=>drinkHeld=false,1200);});
+$('mobileLatch').addEventListener('click',()=>{beginPlay();launch();});
+let draggingPointer=null,prevX=0,prevY=0;
+canvas.addEventListener('pointerdown',e=>{if(draggingPointer!==null)return;e.preventDefault();beginPlay();draggingPointer=e.pointerId;prevX=e.clientX;prevY=e.clientY;canvas.setPointerCapture(e.pointerId);});
+canvas.addEventListener('pointermove',e=>{if(e.pointerId!==draggingPointer)return;e.preventDefault();angle-=(e.clientX-prevX)*.007;pitch=clamp(pitch+(e.clientY-prevY)*.006,-.35,.78);prevX=e.clientX;prevY=e.clientY;});
+const endDrag=e=>{if(e.pointerId===draggingPointer)draggingPointer=null;};
+canvas.addEventListener('pointerup',endDrag);canvas.addEventListener('pointercancel',endDrag);canvas.addEventListener('lostpointercapture',endDrag);
 const stickEl=$('stick'),knob=$('knob');let stickPointer=null;
 function moveStick(e){
  const rect=stickEl.getBoundingClientRect(),dx=e.clientX-(rect.left+rect.width/2),dy=e.clientY-(rect.top+rect.height/2),len=Math.hypot(dx,dy),ratio=Math.min(1,len/38);
  const x=len?dx/len*ratio:0,z=len?-dy/len*ratio:0;
  stick.set(z,0,x);knob.style.transform='translate('+x*38+'px,'+(-z)*38+'px)';
- if(ratio>.06){started=true;$('intro').classList.add('hidden');}
+ if(ratio>.06)beginPlay();
 }
-stickEl.addEventListener('pointerdown',e=>{e.preventDefault();stickPointer=e.pointerId;stickEl.setPointerCapture(e.pointerId);moveStick(e);});
-stickEl.addEventListener('pointermove',e=>{if(stickPointer===e.pointerId)moveStick(e);});
+stickEl.addEventListener('pointerdown',e=>{e.preventDefault();if(stickPointer!==null)return;stickPointer=e.pointerId;stickEl.setPointerCapture(e.pointerId);moveStick(e);});
+stickEl.addEventListener('pointermove',e=>{if(stickPointer===e.pointerId){e.preventDefault();moveStick(e);}});
 function stopStick(e){if(stickPointer!==e.pointerId)return;stickPointer=null;stick.set(0,0,0);knob.style.transform='translate(0,0)';}
-stickEl.addEventListener('pointerup',stopStick);stickEl.addEventListener('pointercancel',stopStick);
+stickEl.addEventListener('pointerup',stopStick);stickEl.addEventListener('pointercancel',stopStick);stickEl.addEventListener('lostpointercapture',stopStick);
+document.addEventListener('selectstart',e=>e.preventDefault());
+document.addEventListener('dragstart',e=>e.preventDefault());
+document.addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('gesturestart',e=>e.preventDefault(),{passive:false});
 $('loading').classList.add('hidden');
 requestAnimationFrame(frame);
