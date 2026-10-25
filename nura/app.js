@@ -68,10 +68,11 @@ for(let i=0;i<3;i++){
   const x=-2.1+i*.69,h=.22+i*.22;
   box(x,h/2,-.05,.72,h,3.2,stone,true);
   surface(V(x,h+.012,-.05),V(1,0,0),V(0,0,1),.70,3.15,'STAIRS');
-  surface(V(x+.36,h/2,-.05),V(0,1,0),V(0,0,1),h,3.1,'STAIRS');
+  surface(V(x-.36,h/2,-.05),V(0,0,1),V(0,1,0),3.1,h,'STAIRS');
 }
 box(1.15,.35,-.06,1.85,.7,3.25,stone,true);
 surface(V(1.15,.716,-.06),V(1,0,0),V(0,0,1),1.83,3.22,'STAIRS');
+surface(V(.225,.35,-.06),V(0,0,1),V(0,1,0),3.2,.68,'STAIRS');
 // Tall face and underside are sampled with exactly the same surface rule.
 box(2.26,1.48,0,.5,2.96,4.15,stoneSide,true);
 surface(V(1.995,1.48,0),V(0,0,1),V(0,1,0),4.12,2.94,'WALL');
@@ -101,6 +102,7 @@ for(const p of surfacePatches){
 }
 // Irregular rocks: shoot a ray from outside toward each collider and use the actual hit normal.
 const raycaster=new THREE.Raycaster();
+scene.updateMatrixWorld(true);
 for(const {m,r} of rocks)for(let i=0;i<110;i++){
   const dir=V(R(-1,1),R(-.45,1),R(-1,1)).normalize();
   const from=m.position.clone().addScaledVector(dir,r*3);
@@ -269,36 +271,55 @@ const shadowTex=(()=>{const c=document.createElement('canvas');c.width=c.height=
 const shadow=new THREE.Mesh(new THREE.PlaneGeometry(1,1),new THREE.MeshBasicMaterial({map:shadowTex,transparent:true,depthWrite:false,opacity:.75}));
 shadow.rotation.x=-Math.PI/2;shadow.scale.set(2.1,1.6,1);scene.add(shadow);
 const states={IDLE:0,REACH:1,GRIP:2,RELEASE:3};
-let body=V(-5.52,.43,.0),vel=V(),stageIndex=0,autoplay=true,autoTarget=0,elapsed=0,drinkHeld=false,latchRequested=false,latchTime=0;
+let body=V(-5.52,.43,.0),vel=V(),stageIndex=0,autoplay=true,elapsed=0,drinkHeld=false,latchRequested=false,latchTime=0;
 const keys=new Set(),stick=V(),desired=V(1,0,0),tentacles=[],worldUp=V(0,1,0);
 let angle=2.30,pitch=.27,started=false,messageTimeout=0,shake=0,supported=0,lastSurface='GROUND';
 for(let i=0;i<MAX;i++)tentacles.push({state:states.IDLE,time:0,target:null,points:Array.from({length:STEPS},()=>body.clone()),prev:Array.from({length:STEPS},()=>body.clone()),length:1.1,base:V(),drop:-1,long:false});
-const autoPath=[
-  V(-4.2,.49,-.3),V(-1.55,.7,0),V(.9,1.0,.15),V(1.84,1.05,.03),
-  V(1.83,2.4,0),V(1.90,3.45,0),V(3.55,3.77,.05),
-  V(5.15,3.75,.1),V(6.45,1.70,-.9),V(5.95,1.58,-.85),
-  V(6.88,.48,-.5),V(8.4,.46,0),V(9.7,.43,-.7)
-];
-const vecTmp=V(),vecTmp2=V();
-const lerpVector=(a,b,t)=>a.clone().lerp(b,t);
+// Navigation is a *direction*, not a prerecorded series of body coordinates.
+// The changing support surface transports the forward vector across each corner.
+let activeSurface=null,forward=V(1,0,0),travelNormal=V(0,1,0);
+const forwardHint=V(1,0,0);
 function tipRoot(i){
  const a=i*2.39996,b=(i%5)*.13;
  return body.clone().add(V(Math.cos(a)*(.09+.04*Math.sin(elapsed*3+b)),Math.sin(i*1.7)*.07,Math.sin(a)*.12));
 }
-function getSurface(){
- let best=null,score=1e9;
- for(const s of surfacePatches){
-   const relative=body.clone().sub(s.origin);
-   const along=relative.dot(s.n),u=relative.dot(s.u),v=relative.dot(s.v);
-   if(Math.abs(u)>s.w/2+.4||Math.abs(v)>s.h/2+.4||Math.abs(along)>1.65)continue;
-   let cost=Math.abs(along),pref=0;
-   if(s.name==='WALL'&&body.x>1.0&&body.x<2.5&&body.y<3.23&&desired.x>.05)pref=-2.3;
-   if(s.name==='ROOF'&&body.y>3.15)pref=-.7;
-   if(s.name==='CEILING'&&body.y>2.1&&body.y<3.12&&body.x>2.6)pref=-.3;
-   cost+=pref;
-   if(cost<score){score=cost;best={s,along};}
+// Signed surface distance is coupled to actual GRIP anchors. The motor never
+// decides where the body should be in world space using author-written path points.
+function getSurface(inputDirection=forward){
+ let best=null,bestCost=Infinity;
+ const grips=tentacles.slice(0,stages[stageIndex]).filter(t=>t.state===states.GRIP&&t.target);
+ for(const patch of surfacePatches){
+   const relative=body.clone().sub(patch.origin);
+   const normalDistance=relative.dot(patch.n);
+   if(normalDistance<-.28||normalDistance>1.30)continue;
+   const u=relative.dot(patch.u),v=relative.dot(patch.v);
+   const outside=Math.max(0,Math.abs(u)-patch.w*.5)+Math.max(0,Math.abs(v)-patch.h*.5);
+   if(outside>0.76)continue;
+   const support=grips.filter(t=>t.target.n.dot(patch.n)>.87&&t.target.p.distanceTo(body)<1.35).length;
+   // Incoming obstacles are the next surface when forward movement meets them.
+   const pressure=Math.max(0,-inputDirection.dot(patch.n));
+   const vertical=1-Math.abs(patch.n.y);
+   // A new face requires accessible anchor support, unless it is directly in front.
+   const cost=Math.abs(normalDistance-.37)+outside*1.7-support*.085
+     -pressure*vertical*.76
+     +(activeSurface===patch?-.17:0)
+     +(normalDistance<.02?.9:0);
+   if(cost<bestCost){bestCost=cost;best={s:patch,along:normalDistance,grips:support,score:cost};}
  }
  return best;
+}
+// Contact discovery is local and surface agnostic: normals are transported with
+// a quaternion, so +forward on a floor becomes +up on the adjacent wall.
+function transportForward(nextNormal){
+ if(travelNormal.dot(nextNormal)<.9999){
+   const q=new THREE.Quaternion().setFromUnitVectors(travelNormal,nextNormal);
+   forward.applyQuaternion(q);
+   travelNormal.copy(nextNormal);
+ }
+ forward.addScaledVector(nextNormal,-forward.dot(nextNormal)).normalize();
+ if(forward.lengthSq()<.05){
+   forward.copy(forwardHint).addScaledVector(nextNormal,-forwardHint.dot(nextNormal)).normalize();
+ }
 }
 function visibleAnchor(a){
  const d=a.p.clone().sub(body),len=d.length();
@@ -322,26 +343,27 @@ function nearPoolGrips(p){
  return tentacles.filter(t=>t.state===states.GRIP&&t.target&&t.target.p.distanceTo(p.pos)<p.radius+(.2)).length;
 }
 function chooseAnchor(index,pool){
- const root=tipRoot(index),radius=1.72+stageIndex*.085;
- const ideal=mix(1.08,.78,stageIndex/4);
+ const root=tipRoot(index),radius=1.13+stageIndex*.045;
+ const ideal=mix(.72,.46,stageIndex/4);
  const candidates=queryAnchors(body,radius).filter(a=>a.p.distanceTo(root)>.26);
- const occupied=tentacles.filter(t=>t.state===states.GRIP&&t.target).map(t=>t.target.p);
+ const occupied=tentacles.filter(t=>(t.state===states.GRIP||t.state===states.REACH)&&t.target).map(t=>t.target);
+ const usedAnchorIds=new Set(occupied.map(t=>t.id));
  let ranked=[];
  for(const a of candidates){
    const direction=a.p.clone().sub(body),length=direction.length();
-   if(length>radius||length<.2)continue;
+   if(length>radius||length<.2||usedAnchorIds.has(a.id))continue;
    const nScore=clamp(a.n.dot(body.clone().sub(a.p).normalize()),-.4,1);
    if(nScore<-.18)continue;
    const tangent=direction.clone().addScaledVector(a.n,-direction.dot(a.n)).length();
    const dist=Math.abs(tangent-ideal);
    const move=direction.clone().normalize().dot(desired);
-   const sep=occupied.length?Math.min(...occupied.map(p=>p.distanceTo(a.p))):.7;
+   const sep=occupied.length?Math.min(...occupied.map(t=>t.p.distanceTo(a.p))):.7;
    const theta=index*2.39996;
    const radial=V(Math.cos(theta),0,Math.sin(theta));
-   const spread=direction.clone().setY(0).normalize().dot(radial);
-   let score=(1-dist/.9)*2.4+move*.8+nScore*1.3+Math.min(sep,1.05)*2.2+spread*2.5+R(-.11,.11);
+   const spread=direction.clone().addScaledVector(travelNormal,-direction.dot(travelNormal)).normalize().dot(radial);
+   let score=(1-dist/.9)*2.4+move*1.4+nScore*1.5+Math.min(sep,.85)*2.0+spread*.65+R(-.10,.10);
    if(sep<.36)score-=4.5;
-   if(pool&&!pool.used&&a.p.distanceTo(pool.pos)<pool.radius)score+=1.6;
+   if(pool&&!pool.used&&a.p.distanceTo(pool.pos)<pool.radius)score+=(nearPoolGrips(pool)<3?4.0:1.0);
    ranked.push({a,score});
  }
  ranked.sort((a,b)=>b.score-a.score);
@@ -371,7 +393,7 @@ function equalBezier(a,b){
  return out;
 }
 function startReach(t,index,anchor){
- t.state=states.REACH;t.time=0;t.target=anchor;t.long=false;t.length=1.76+stageIndex*.095;
+ t.state=states.REACH;t.time=0;t.target=anchor;t.long=false;t.length=1.19+stageIndex*.035;
  const root=tipRoot(index),curve=equalBezier(root,anchor.p);
  for(let j=0;j<STEPS;j++){t.points[j].copy(root);t.prev[j].copy(root);}
  t.curve=curve;
@@ -408,6 +430,13 @@ function simulateRope(t,index,dt){
 }
 function updateTentacles(dt){
  const pool=nearestPool(),active=stages[stageIndex],count=gripCount(),target=gripTarget();
+ // If a pool is in reach, free a rear hold for a third feeding tentacle.
+ // It still must find, reach and GRIP a real surface anchor to start feeding.
+ if(pool&&nearPoolGrips(pool)<3&&body.distanceTo(pool.pos)<1.46&&count>=target-1){
+   const spare=tentacles.slice(0,active).filter(t=>t.state===states.GRIP&&!t.long&&t.target.p.distanceTo(pool.pos)>pool.radius+.16)
+      .sort((a,b)=>a.target.p.clone().sub(body).dot(desired)-b.target.p.clone().sub(body).dot(desired))[0];
+   if(spare)release(spare);
+ }
  if(count>target+2){
    const excess=tentacles.slice(0,active).filter(t=>t.state===states.GRIP&&!t.long)
       .sort((a,b)=>a.target.p.clone().sub(body).dot(desired)-b.target.p.clone().sub(body).dot(desired));
@@ -417,7 +446,7 @@ function updateTentacles(dt){
  for(let i=0;i<active;i++){
    const t=tentacles[i],root=tipRoot(i);t.time+=dt;
    if(t.state===states.IDLE){
-     if(committedCount()<target+2){const a=chooseAnchor(i,pool);if(a)startReach(t,i,a);}
+     if(committedCount()<target+1){const a=chooseAnchor(i,pool);if(a)startReach(t,i,a);}
    }else if(t.state===states.REACH){
      const progress=clamp(t.time/(.13+stageIndex*.008),0,1);
      const endIdx=progress*(STEPS-1);
@@ -494,7 +523,7 @@ function updateWater(dt){
      }
      if(p.drinkTime>=2.75){
        p.used=true;p.drinking=false;
-       if(p.barrel){body.y+=.14;vel.y+=2.65;autoTarget=Math.max(autoTarget,10);}
+       if(p.barrel){body.y+=.14;vel.y+=2.65;}
        stageIndex=Math.min(4,stageIndex+1);shake=.3;
        message('EVOLUTION · '+stages[stageIndex]+' TENTACLES');
        for(let i=stages[stageIndex-1];i<stages[stageIndex];i++){
@@ -520,61 +549,111 @@ function launch(){
  if(highest&&visibleAnchor(highest)){startReach(tentacles[slot],slot,highest);tentacles[slot].length=2.45;tentacles[slot].long=true;vel.y+=.9;message('LONG REACH · LATCH');}
  else {vel.y+=2.2;message('LEAP');}
 }
-function worldMovement(dt){
- const info=getSurface(),target=gripTarget(),num=gripCount();
- supported=clamp(num/Math.max(1,target),0,1)*(info?1:.22);
- const inputX=(keys.has('KeyW')||keys.has('ArrowUp')?1:0)-(keys.has('KeyS')||keys.has('ArrowDown')?1:0)+stick.x;
- const inputZ=(keys.has('KeyD')||keys.has('ArrowRight')?1:0)-(keys.has('KeyA')||keys.has('ArrowLeft')?1:0)+stick.z;
- if(Math.abs(inputX)+Math.abs(inputZ)>.06)autoplay=false;
- if(autoplay){
-   const waypoint=autoPath[Math.min(autoTarget,autoPath.length-1)];
-   desired.copy(waypoint).sub(body);if(desired.length()<.95&&autoTarget<autoPath.length-1)autoTarget++;
-   desired.normalize();
- }else{
-   const rotation=angle-2.30;
-   desired.set(inputX*Math.cos(rotation)-inputZ*Math.sin(rotation),0,inputX*Math.sin(rotation)+inputZ*Math.cos(rotation)).normalize();
- }
- if(autoplay&&autoTarget>=autoPath.length-1&&body.distanceTo(autoPath.at(-1))<.7){autoTarget=0;autoplay=false;message('EXPLORATION COMPLETE');}
- const surface=info?.s;
- if(surface){
-   lastSurface=surface.name;
-   const normal=surface.n;
-   const dot=desired.dot(normal);
-   let along=desired.clone().addScaledVector(normal,-dot);
-   if(surface.name==='WALL'&&desired.x>.05){along.addScaledVector(worldUp,Math.max(.5,desired.x*1.65));if(body.y>2.86)along.x+=1.35;}
-   if(surface.name==='CEILING'&&desired.y>.25)along.add(V(.4,0,0));
-   if(along.length()>.01)along.normalize();
-   const speed=(2.95+stageIndex*.32)*(autoplay?.80:1);
-   vel.lerp(along.multiplyScalar(speed),1-Math.exp(-dt*(supported>.2?16:9)));
-   const offset=mix(.40,.91,stageIndex/4);
-   const error=offset-info.along;
-   vel.addScaledVector(normal,clamp(error*7.2*dt,-.18,.18)*(supported*.8+.13));
-   if(!autoplay&&desired.length()<.01)vel.multiplyScalar(Math.exp(-dt*17));
- }else{
-   lastSurface='AIR';
-   vel.x+=desired.x*dt*6;vel.z+=desired.z*dt*6;
- }
- vel.y-=9.5*(1-supported)*dt;
- const terminal=6.2;vel.y=Math.max(-terminal,vel.y);
- body.addScaledVector(vel,dt);
- // Grip ropes constrain maximum distance, without forcing a fixed length or inverting the state flow.
- for(let k=0;k<3;k++)for(let i=0;i<stages[stageIndex];i++){
-   const t=tentacles[i];if(t.state!==states.GRIP||!t.target)continue;
-   const displacement=body.clone().sub(t.target.p),dist=displacement.length();
-   if(dist>t.length){
-     body.addScaledVector(displacement,(t.length-dist)/dist*.35);
-     const radial=displacement.normalize();
-     const outward=vel.dot(radial);if(outward>0)vel.addScaledVector(radial,-outward*.75);
+// One point mass, surface motor and maximum-length rope constraints.
+// Grapples are selected AFTER the body step; verlet only handles rope shape.
+scene.updateMatrixWorld(true);
+const solidBounds=obstacleMeshes.map(mesh=>new THREE.Box3().setFromObject(mesh));
+// Discard sampled points hidden *inside* another collider. This is done once,
+// after the full level is assembled, and all spatial hash buckets are rebuilt.
+const validAnchors=anchors.filter(anchor=>anchor.kind==='ROCK'||!solidBounds.some(b=>
+  anchor.p.x>b.min.x+.014&&anchor.p.x<b.max.x-.014&&
+  anchor.p.y>b.min.y+.014&&anchor.p.y<b.max.y-.014&&
+  anchor.p.z>b.min.z+.014&&anchor.p.z<b.max.z-.014));
+anchors.length=0;hash.clear();
+for(const anchor of validAnchors){
+  anchor.id=anchors.length;anchors.push(anchor);
+  const pos=anchor.p,k=key(cell(pos.x),cell(pos.y),cell(pos.z));
+  if(!hash.has(k))hash.set(k,[]);
+  hash.get(k).push(anchor);
+}
+function separateSolid(){
+ const r=.26+stageIndex*.065;
+ // Resolve sphere versus all authored colliders with a single generic routine.
+ for(const bound of solidBounds){
+   const nearest=body.clone().clamp(bound.min,bound.max);
+   const delta=body.clone().sub(nearest);
+   let d=delta.length();
+   if(d>=r)continue;
+   if(d<.00001){
+     const candidates=[
+       [body.x-bound.min.x,V(-1,0,0)], [bound.max.x-body.x,V(1,0,0)],
+       [body.y-bound.min.y,V(0,-1,0)], [bound.max.y-body.y,V(0,1,0)],
+       [body.z-bound.min.z,V(0,0,-1)], [bound.max.z-body.z,V(0,0,1)]
+     ];
+     candidates.sort((a,b)=>a[0]-b[0]);
+     const normal=candidates[0][1];body.addScaledVector(normal,candidates[0][0]+r);
+     const toward=vel.dot(normal);if(toward<0)vel.addScaledVector(normal,-toward);
+   }else{
+     delta.divideScalar(d);body.addScaledVector(delta,r-d);
+     const toward=vel.dot(delta);if(toward<0)vel.addScaledVector(delta,-toward);
    }
  }
- // Solid geometry stops penetration; the motor projects forward push onto the wall tangent.
- if(body.y<.34){body.y=.34;if(vel.y<0)vel.y=0;}
- if(body.x>1.1&&body.x<2.6&&body.y<3.06&&Math.abs(body.z)<2.2){body.x=Math.min(body.x,1.995-(.345+stageIndex*.075)-.10);if(vel.x>0)vel.x=0;}
- if(body.x>2.4&&body.x<5.75&&body.y>2.95&&body.y<3.72){body.y=3.383+(.345+stageIndex*.075)+.09;vel.y=Math.max(0,vel.y);}
- if(body.x>5.2&&body.x<6.3&&body.y<1.1&&Math.abs(body.z+.85)<.66){body.y=Math.max(body.y,1.03);}
- if(body.x>9.8){body.x=9.8;autoplay=false;}if(body.x< -7.5)body.x=-7.5;
- if(Math.abs(body.z)>4.7)body.z=clamp(body.z,-4.7,4.7);
- if(latchTime>0){latchTime-=dt;if(latchRequested){vel.y+=.9*dt;latchRequested=false;}}
+}
+function worldMovement(dt){
+ const inputF=(keys.has('KeyW')||keys.has('ArrowUp')?1:0)-(keys.has('KeyS')||keys.has('ArrowDown')?1:0)+stick.x;
+ const inputSide=(keys.has('KeyD')||keys.has('ArrowRight')?1:0)-(keys.has('KeyA')||keys.has('ArrowLeft')?1:0)+stick.z;
+ if(Math.abs(inputF)+Math.abs(inputSide)>.06)autoplay=false;
+ const inputForce=autoplay?1:inputF;
+ // The normal comes from the currently reachable surface, not the world up axis.
+ let info=getSurface(desired);
+ if(info&&info.s!==activeSurface){
+   activeSurface=info.s;
+   transportForward(info.s.n);
+ }
+ const normal=info?info.s.n:travelNormal;
+ const side=forward.clone().cross(normal).normalize();
+ if(autoplay){
+   const nextPool=pools.find(p=>!p.used);
+   // Mild steering toward the liquid, never a path for the body to follow.
+   // Once all liquid has been absorbed, steer around nearby props. This is an
+   // input heading only: contact physics, not a prerecorded waypoint, moves us.
+   const targetZ=nextPool?nextPool.pos.z:1.9;
+   const lateral=clamp((targetZ-body.z)*(nextPool?.36:1.1),-1.7,1.7);
+   desired.copy(forward).addScaledVector(side,lateral).normalize();
+ }else{
+   desired.copy(forward).multiplyScalar(inputForce).addScaledVector(side,inputSide);
+   if(desired.lengthSq()>1)desired.normalize();
+ }
+ const count=gripCount();
+ const target=gripTarget()+(info?.s.name==='CEILING'?1:0);
+ supported=clamp(count/Math.max(1,target),0,1);
+ if(!info)supported*=.12;
+ lastSurface=info?.s.name||'AIR';
+ if(info&&supported>.02){
+   const motor=desired.clone().addScaledVector(normal,-desired.dot(normal));
+   const speed=2.20+stageIndex*.24;
+   const response=1-Math.exp(-dt*(supported>.4?11:6));
+   const tangentV=vel.clone().addScaledVector(normal,-vel.dot(normal));
+   const delta=motor.multiplyScalar(speed).sub(tangentV);
+   vel.addScaledVector(delta,response*supported);
+   // A supported mass seeks a standoff from the surface, not a floor Y.
+   const offset=.34+stageIndex*.07;
+   const normalSpeed=vel.dot(normal);
+   vel.addScaledVector(normal,(clamp((offset-info.along)*20-normalSpeed*7,-12,12))*dt*supported);
+ }else{
+   vel.addScaledVector(desired,dt*4);
+ }
+ vel.y-=9.5*(1-supported)*dt;
+ vel.y=Math.max(-7,vel.y);
+ if(desired.lengthSq()<.01)vel.multiplyScalar(Math.exp(-dt*9));
+ body.addScaledVector(vel,dt);
+ // Hard unilateral constraints: a rope may slack but may never extend past max.
+ for(let iteration=0;iteration<4;iteration++)for(let i=0;i<stages[stageIndex];i++){
+   const t=tentacles[i];if(t.state!==states.GRIP||!t.target)continue;
+   const diff=body.clone().sub(t.target.p),length=diff.length();
+   if(length>t.length){
+     const outward=diff.multiplyScalar(1/length);
+     body.addScaledVector(outward,-(length-t.length)*.72);
+     const radialV=vel.dot(outward);
+     if(radialV>0)vel.addScaledVector(outward,-radialV);
+   }
+ }
+ for(let i=0;i<2;i++)separateSolid();
+ if(body.y<.29){body.y=.29;if(vel.y<0)vel.y=0;}
+ body.x=clamp(body.x,-7.5,11.45);
+ body.z=clamp(body.z,-4.8,4.8);
+ if(body.x>=11.40&&autoplay){autoplay=false;vel.multiplyScalar(.05);message('EXPLORATION COMPLETE');}
+ if(latchTime>0)latchTime-=dt;
 }
 function updateVisual(){
  bodyMesh.position.copy(body);const size=.345+stageIndex*.075;
@@ -601,7 +680,7 @@ function updateHUD(){
  $('surface').textContent=lastSurface;
  $('support').textContent=Math.round(supported*100)+'%';
  $('supportFill').style.width=Math.round(supported*100)+'%';
- $('stage').textContent=lastSurface==='WALL'?'ASCENT / 02':lastSurface==='CEILING'?'UNDERSIDE / 03':body.x>5.4?'QUARRY / 04':'GARDEN / 01';
+ $('stage').textContent=lastSurface==='WALL'?'ASCENT / 02':lastSurface==='CEILING'?'UNDERSIDE / 03':lastSurface==='ROOF'?'ROOFTOP / 03':lastSurface==='EDGE'?'EDGE / 04':'GARDEN / 01';
  $('evolution').textContent='STAGE 0'+(stageIndex+1)+' / 05';
  $('levels').querySelectorAll('span').forEach((e,i)=>e.className=i===stageIndex?'active':i<stageIndex?'past':'');
  const p=pools.find(x=>x.drinking);
@@ -611,7 +690,7 @@ function updateHUD(){
  if(elapsed>messageTimeout)$('message').classList.remove('show');
 }
 function reset(){
- body.set(-5.52,.43,0);vel.set(0,0,0);supported=1;stageIndex=0;autoTarget=0;autoplay=true;latchTime=0;elapsed=0;
+ body.set(-5.52,.43,0);vel.set(0,0,0);supported=1;stageIndex=0;activeSurface=null;forward.set(1,0,0);travelNormal.set(0,1,0);autoplay=true;latchTime=0;elapsed=0;
  for(const p of pools){p.fill=1;p.drinking=false;p.drinkTime=0;p.used=false;p.mesh.scale.setScalar(p.radius);p.uniforms.uFill.value=1;}
  for(const t of tentacles){t.state=states.IDLE;t.target=null;t.time=0;t.drop=-1;t.long=false;}
  for(let i=0;i<8;i++){const a=chooseAnchor(i,null);if(a){startReach(tentacles[i],i,a);tentacles[i].state=states.GRIP;for(let j=0;j<STEPS;j++){tentacles[i].points[j].copy(tentacles[i].curve[j]);tentacles[i].prev[j].copy(tentacles[i].curve[j]);}}}
@@ -630,7 +709,12 @@ function frame(time){
  updateVisual();
  for(const p of pools)p.uniforms.uTime.value=elapsed;
  const distance=innerWidth<700?5.7:6.0;
- const offset=V(Math.cos(angle)*distance,2.15+Math.sin(pitch)*distance*.32,Math.sin(angle)*distance);
+ // When the mass passes under a slab, follow from below rather than
+ // obscuring the creature with the opaque ceiling. Only camera presentation
+ // changes here; locomotion never reads the camera height.
+ const underside=lastSurface==='CEILING'||(activeSurface?.name==='CEILING'&&body.y>1.05);
+ const cameraHeight=(underside?-2.0:2.15)+Math.sin(pitch)*distance*.32;
+ const offset=V(Math.cos(angle)*distance,cameraHeight,Math.sin(angle)*distance);
  const desiredCam=body.clone().add(offset);
  if(shake>0){desiredCam.x+=R(-shake,shake)*.3;desiredCam.y+=R(-shake,shake)*.3;shake-=dt;}
  camera.position.lerp(desiredCam,1-Math.exp(-dt*12));
