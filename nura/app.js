@@ -276,7 +276,7 @@ for(let i=0;i<MAX;i++)tentacles.push({state:states.IDLE,time:0,target:null,point
 const autoPath=[
   V(-4.2,.49,-.3),V(-1.55,.7,0),V(.9,1.0,.15),V(1.84,1.05,.03),
   V(1.83,2.4,0),V(1.90,3.45,0),V(3.55,3.77,.05),
-  V(5.15,3.75,.1),V(5.6,2.0,-.9),V(5.95,1.58,-.85),
+  V(5.15,3.75,.1),V(6.45,1.70,-.9),V(5.95,1.58,-.85),
   V(6.88,.48,-.5),V(8.4,.46,0),V(9.7,.43,-.7)
 ];
 const vecTmp=V(),vecTmp2=V();
@@ -290,9 +290,9 @@ function getSurface(){
  for(const s of surfacePatches){
    const relative=body.clone().sub(s.origin);
    const along=relative.dot(s.n),u=relative.dot(s.u),v=relative.dot(s.v);
-   if(Math.abs(u)>s.w/2+.4||Math.abs(v)>s.h/2+.4)continue;
+   if(Math.abs(u)>s.w/2+.4||Math.abs(v)>s.h/2+.4||Math.abs(along)>1.65)continue;
    let cost=Math.abs(along),pref=0;
-   if(s.name==='WALL'&&body.x>1.6&&body.x<2.4&&body.y<3.12)pref=-.6;
+   if(s.name==='WALL'&&body.x>1.0&&body.x<2.5&&body.y<3.23&&desired.x>.05)pref=-2.3;
    if(s.name==='ROOF'&&body.y>3.15)pref=-.7;
    if(s.name==='CEILING'&&body.y>2.1&&body.y<3.12&&body.x>2.6)pref=-.3;
    cost+=pref;
@@ -331,7 +331,8 @@ function chooseAnchor(index,pool){
    if(length>radius||length<.2)continue;
    const nScore=clamp(a.n.dot(body.clone().sub(a.p).normalize()),-.4,1);
    if(nScore<-.18)continue;
-   const dist=Math.abs(length-ideal);
+   const tangent=direction.clone().addScaledVector(a.n,-direction.dot(a.n)).length();
+   const dist=Math.abs(tangent-ideal);
    const move=direction.clone().normalize().dot(desired);
    const sep=occupied.length?Math.min(...occupied.map(p=>p.distanceTo(a.p))):.7;
    const theta=index*2.39996;
@@ -346,9 +347,12 @@ function chooseAnchor(index,pool){
  return null;
 }
 function bezier(a,b,t){
- const mid=a.clone().lerp(b,.5).add(V(0,.12+.22*Math.sin(t*Math.PI),0));
- const c1=a.clone().lerp(mid,.67).add(V(0,.40,0));
- const c2=b.clone().lerp(mid,.65).add(V(0,.38,0));
+ const delta=b.clone().sub(a);
+ const outward=delta.clone().setY(0);
+ if(outward.lengthSq()<.0001)outward.set(1,0,0);else outward.normalize();
+ const arch=.4+stageIndex*.085;
+ const c1=a.clone().addScaledVector(outward,arch).add(V(0,.29,0));
+ const c2=b.clone().addScaledVector(outward,arch*.76).add(V(0,.33,0));
  const q=1-t;
  return a.clone().multiplyScalar(q*q*q).addScaledVector(c1,3*q*q*t).addScaledVector(c2,3*q*t*t).addScaledVector(b,t*t*t);
 }
@@ -390,7 +394,8 @@ function simulateRope(t,index,dt){
    t.prev[j].copy(pos);
  }
  points[0].copy(root);points[STEPS-1].copy(end);
- const segLen=Math.max(.06,root.distanceTo(end)*1.09/(STEPS-1));
+ let arcLength=0;for(let j=0;j<STEPS-1;j++)arcLength+=curve[j].distanceTo(curve[j+1]);
+ const segLen=Math.max(.07,arcLength*1.04/(STEPS-1));
  for(let pass=0;pass<5;pass++){
    for(let j=0;j<STEPS-1;j++){
      const a=points[j],b=points[j+1],d=b.clone().sub(a),len=d.length();
@@ -405,7 +410,7 @@ function updateTentacles(dt){
  for(let i=0;i<active;i++){
    const t=tentacles[i],root=tipRoot(i);t.time+=dt;
    if(t.state===states.IDLE){
-     if(gripCount()<target||rand()<dt*.28){const a=chooseAnchor(i,pool);if(a)startReach(t,i,a);}
+     if(gripCount()<target+2){const a=chooseAnchor(i,pool);if(a)startReach(t,i,a);}
    }else if(t.state===states.REACH){
      const progress=clamp(t.time/(.23+stageIndex*.02),0,1);
      const endIdx=progress*(STEPS-1);
@@ -499,13 +504,13 @@ function launch(){
 }
 function worldMovement(dt){
  const info=getSurface(),target=gripTarget(),num=gripCount();
- supported=clamp(num/Math.max(1,target),0,1);
+ supported=clamp(num/Math.max(1,target),0,1)*(info?1:.22);
  const inputX=(keys.has('KeyW')||keys.has('ArrowUp')?1:0)-(keys.has('KeyS')||keys.has('ArrowDown')?1:0)+stick.x;
  const inputZ=(keys.has('KeyD')||keys.has('ArrowRight')?1:0)-(keys.has('KeyA')||keys.has('ArrowLeft')?1:0)+stick.z;
  if(Math.abs(inputX)+Math.abs(inputZ)>.06)autoplay=false;
  if(autoplay){
    const waypoint=autoPath[Math.min(autoTarget,autoPath.length-1)];
-   desired.copy(waypoint).sub(body);if(desired.length()<.66&&autoTarget<autoPath.length-1)autoTarget++;
+   desired.copy(waypoint).sub(body);if(desired.length()<.95&&autoTarget<autoPath.length-1)autoTarget++;
    desired.normalize();
  }else desired.set(inputX,0,inputZ).normalize();
  if(autoplay&&autoTarget>=autoPath.length-1&&body.distanceTo(autoPath.at(-1))<.7){autoTarget=0;autoplay=false;message('EXPLORATION COMPLETE');}
@@ -515,12 +520,12 @@ function worldMovement(dt){
    const normal=surface.n;
    const dot=desired.dot(normal);
    let along=desired.clone().addScaledVector(normal,-dot);
-   if(surface.name==='WALL'&&desired.x>.05)along.addScaledVector(worldUp,desired.x*1.45);
+   if(surface.name==='WALL'&&desired.x>.05){along.addScaledVector(worldUp,Math.max(.5,desired.x*1.65));if(body.y>2.86)along.x+=1.35;}
    if(surface.name==='CEILING'&&desired.y>.25)along.add(V(.4,0,0));
    if(along.length()>.01)along.normalize();
    const speed=(1.48+stageIndex*.26)*(autoplay?.72:1);
    vel.lerp(along.multiplyScalar(speed),clamp(dt*(supported>.2?4.2:1.6),0,1));
-   const offset=mix(.30,.52,stageIndex/4);
+   const offset=mix(.40,.91,stageIndex/4);
    const error=offset-info.along;
    vel.addScaledVector(normal,clamp(error*7.2*dt,-.18,.18)*(supported*.8+.13));
    if(!autoplay&&desired.length()<.01)vel.multiplyScalar(Math.exp(-dt*3.7));
@@ -542,7 +547,7 @@ function worldMovement(dt){
  }
  // Solid geometry stops penetration; the motor projects forward push onto the wall tangent.
  if(body.y<.34){body.y=.34;if(vel.y<0)vel.y=0;}
- if(body.x>1.1&&body.x<2.6&&body.y<3.04&&Math.abs(body.z)<2.2){body.x=Math.min(body.x,1.995-(.345+stageIndex*.075)-.10);if(vel.x>0)vel.x=0;}
+ if(body.x>1.1&&body.x<2.6&&body.y<3.06&&Math.abs(body.z)<2.2){body.x=Math.min(body.x,1.995-(.345+stageIndex*.075)-.10);if(vel.x>0)vel.x=0;}
  if(body.x>2.4&&body.x<5.75&&body.y>2.95&&body.y<3.72){body.y=3.383+(.345+stageIndex*.075)+.09;vel.y=Math.max(0,vel.y);}
  if(body.x>5.2&&body.x<6.3&&body.y<1.1&&Math.abs(body.z+.85)<.66){body.y=Math.max(body.y,1.03);}
  if(body.x>9.8){body.x=9.8;autoplay=false;}if(body.x< -7.5)body.x=-7.5;
@@ -603,7 +608,7 @@ function frame(time){
  updateVisual();
  for(const p of pools)p.uniforms.uTime.value=elapsed;
  const distance=innerWidth<700?6.9:6.5;
- const offset=V(Math.cos(angle)*distance,3.25+Math.sin(pitch)*distance*.5,Math.sin(angle)*distance);
+ const offset=V(Math.cos(angle)*distance,2.15+Math.sin(pitch)*distance*.32,Math.sin(angle)*distance);
  const desiredCam=body.clone().add(offset);
  if(shake>0){desiredCam.x+=R(-shake,shake)*.3;desiredCam.y+=R(-shake,shake)*.3;shake-=dt;}
  camera.position.lerp(desiredCam,1-Math.exp(-dt*2.5));
